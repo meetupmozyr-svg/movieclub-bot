@@ -854,7 +854,7 @@ def main():
             C_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_description)],
             C_PHOTO: [
                 MessageHandler(filters.PHOTO & ~filters.COMMAND, create_photo_step),
-                MessageHandler(filters.Regex("^skip$", flags=re.IGNORECASE), create_photo_step),
+                MessageHandler(filters.Regex(re.compile("^skip$", re.IGNORECASE)), create_photo_step), # <-- ИСПРАВЛЕНО
             ],
         },
         fallbacks=[CommandHandler("cancel", create_cancel)],
