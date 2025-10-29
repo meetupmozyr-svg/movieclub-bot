@@ -1043,94 +1043,105 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception:
             pass
 
+# ... (Остальной код бота без изменений) ...
+
 # ---------------------------- Запуск --------------------------------------
 
 def main():
-    # 📌 Обязательная проверка BOT_TOKEN
-    token = os.environ.get("BOT_TOKEN")
-    if not token:
-        raise EnvironmentError("Переменная окружения 'BOT_TOKEN' не установлена.")
+    try:
+        # 📌 Обязательная проверка BOT_TOKEN
+        token = os.environ.get("BOT_TOKEN")
+        if not token:
+            raise EnvironmentError("Переменная окружения 'BOT_TOKEN' не установлена.")
 
-    persistence = PicklePersistence(filepath=DATA_FILE)
-    
-    # 📌 Использование ApplicationBuilder
-    application = ApplicationBuilder().token(token).persistence(persistence).build()
+        persistence = PicklePersistence(filepath=DATA_FILE)
+        
+        # 📌 Использование ApplicationBuilder
+        application = ApplicationBuilder().token(token).persistence(persistence).build()
 
-    # ------------------ Хендлеры ------------------
-    
-    # 🚨 Добавляем хендлер ошибок
-    application.add_error_handler(error_handler)
-    
-    # Комманды
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("create_event", create_event_command_quick))
-    application.add_handler(CommandHandler("my_events", my_events_command))
-    application.add_handler(CommandHandler("export_event", export_event_command))
-    application.add_handler(CommandHandler("delete_event", delete_event_command))
-    application.add_handler(CommandHandler("remove_participant", remove_participant_command))
+        # ------------------ Хендлеры ------------------
+        
+        # 🚨 Добавляем хендлер ошибок
+        application.add_error_handler(error_handler)
+        
+        # Комманды
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(CommandHandler("create_event", create_event_command_quick))
+        application.add_handler(CommandHandler("my_events", my_events_command))
+        application.add_handler(CommandHandler("export_event", export_event_command))
+        application.add_handler(CommandHandler("delete_event", delete_event_command))
+        application.add_handler(CommandHandler("remove_participant", remove_participant_command))
 
-    # Создание из фото с подписью
-    application.add_handler(
-        MessageHandler(filters.PHOTO & filters.Caption(), create_event_from_photo_message)
-    )
-
-    # Кнопки
-    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(join|leave|no_join)\|\d+$"))
-
-    # Пошаговое создание
-    create_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("create", create_start)],
-        states={
-            C_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_title)],
-            C_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_date)],
-            C_CAPACITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_capacity)],
-            C_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_location)],
-            C_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_description)],
-            C_PHOTO: [
-                MessageHandler(filters.PHOTO | (filters.TEXT & filters.Regex(r"^(?i)skip$")), create_photo_step)
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", create_cancel)],
-        allow_reentry=True,
-        persistent=True, 
-        name="create_event_conversation",
-    )
-    application.add_handler(create_conv_handler)
-    
-    # Пошаговое редактирование
-    edit_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("edit_event", edit_event_command)],
-        states={
-            EDIT_SELECT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_select_field)],
-            EDIT_NEW_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND | filters.PHOTO, edit_new_value)],
-        },
-        fallbacks=[CommandHandler("cancel", create_cancel)], 
-        allow_reentry=True,
-        persistent=True,
-        name="edit_event_conversation",
-    )
-    application.add_handler(edit_conv_handler)
-
-
-    # ------------------ Запуск ------------------
-    PORT = int(os.environ.get("PORT", 8080))
-    WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
-
-    if WEBHOOK_URL:
-        # Webhook mode
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path=token,
-            webhook_url=f"{WEBHOOK_URL}/{token}"
+        # Создание из фото с подписью
+        application.add_handler(
+            MessageHandler(filters.PHOTO & filters.Caption(), create_event_from_photo_message)
         )
-        print(f"Бот запущен в режиме Webhook на порту {PORT}")
-    else:
-        # Polling mode (для локального запуска)
-        application.run_polling(drop_pending_updates=True) # 📌 Добавил очистку очереди
-        print("Бот запущен в режиме Polling")
 
+        # Кнопки
+        application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(join|leave|no_join)\|\d+$"))
+
+        # Пошаговое создание
+        create_conv_handler = ConversationHandler(
+            entry_points=[CommandHandler("create", create_start)],
+            states={
+                C_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_title)],
+                C_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_date)],
+                C_CAPACITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_capacity)],
+                C_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_location)],
+                C_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_description)],
+                C_PHOTO: [
+                    MessageHandler(filters.PHOTO | (filters.TEXT & filters.Regex(r"^(?i)skip$")), create_photo_step)
+                ],
+            },
+            fallbacks=[CommandHandler("cancel", create_cancel)],
+            allow_reentry=True,
+            persistent=True, 
+            name="create_event_conversation",
+        )
+        application.add_handler(create_conv_handler)
+        
+        # Пошаговое редактирование
+        edit_conv_handler = ConversationHandler(
+            entry_points=[CommandHandler("edit_event", edit_event_command)],
+            states={
+                EDIT_SELECT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_select_field)],
+                EDIT_NEW_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND | filters.PHOTO, edit_new_value)],
+            },
+            fallbacks=[CommandHandler("cancel", create_cancel)], 
+            allow_reentry=True,
+            persistent=True,
+            name="edit_event_conversation",
+        )
+        application.add_handler(edit_conv_handler)
+
+
+        # ------------------ Запуск ------------------
+        print("INFO: Начинаем процесс подключения к Telegram...")
+        PORT = int(os.environ.get("PORT", 8080))
+        WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+
+        if WEBHOOK_URL:
+            # Webhook mode
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=PORT,
+                url_path=token,
+                webhook_url=f"{WEBHOOK_URL}/{token}"
+            )
+            print(f"✅ Бот запущен в режиме Webhook на порту {PORT}")
+        else:
+            # Polling mode (для локального запуска)
+            application.run_polling(drop_pending_updates=True) 
+            print("✅ Бот запущен в режиме Polling")
+            
+    except EnvironmentError as e:
+        # Для ошибок, связанных с переменными окружения
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА КОНФИГУРАЦИИ: {e}")
+        print("Пожалуйста, проверьте переменные окружения BOT_TOKEN, CHANNEL, PORT, WEBHOOK_URL.")
+    except Exception as e:
+        # Для любых других ошибок, которые могут остановить скрипт
+        print(f"❌ ФАТАЛЬНАЯ ОШИБКА ПРИ ЗАПУСКЕ:")
+        print(traceback.format_exc()) # Выводим полную трассировку
 
 if __name__ == "__main__":
     main()
-    
