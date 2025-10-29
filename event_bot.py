@@ -109,46 +109,59 @@ async def create_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     data = load_data()
     action, event_id = query.data.split("|")
     event = data["events"].get(event_id)
+
     if not event:
         await query.edit_message_text("Event not found or expired.")
         return
 
     user_id = query.from_user.id
-if user_id in event["waitlist"]:
-    event["waitlist"].remove(user_id)
 
-if action == "join":
-    if len(event["joined"]) < event["capacity"]:
-        event["joined"].append(user_id)
-        response = "You are registered ✅"
-    else:
+    # Remove user from both lists first
+    if user_id in event["joined"]:
+        event["joined"].remove(user_id)
+    if user_id in event["waitlist"]:
+        event["waitlist"].remove(user_id)
+
+    # Handle actions
+    if action == "join":
+        if len(event["joined"]) < event["capacity"]:
+            event["joined"].append(user_id)
+            response = "You are registered ✅"
+        else:
+            event["waitlist"].append(user_id)
+            response = "Event is full — you were added to the waitlist 🕒"
+
+    elif action == "leave":
+        response = "You are marked as not coming ❌"
+
+    elif action == "wait":
         event["waitlist"].append(user_id)
-        response = "Event is full — you were added to the waitlist 🕒"
-elif action == "leave":
-    response = "You are marked as not coming ❌"
-elif action == "wait":
-    event["waitlist"].append(user_id)
-    response = "You were added to the waitlist 🕒"
-else:
-    response = "Unknown action."
+        response = "You were added to the waitlist 🕒"
+    else:
+        response = "Unknown action."
 
-    # promote if space opened
+    # Promote from waitlist if space opened
     while len(event["joined"]) < event["capacity"] and event["waitlist"]:
         promoted = event["waitlist"].pop(0)
         if promoted not in event["joined"]:
             event["joined"].append(promoted)
             try:
-                await context.bot.send_message(chat_id=promoted, text=f"You were moved from waitlist to confirmed for {event['title']} on {event['date']} ✅")
+                await context.bot.send_message(
+                    chat_id=promoted,
+                    text=f"You were moved from waitlist to confirmed for {event['title']} on {event['date']} ✅"
+                )
             except Exception:
                 pass
 
+    # Save and update
     data["events"][event_id] = event
     save_data(data)
 
-    # edit channel message to reflect new counts
+    # Update message in channel
     try:
         await context.bot.edit_message_text(
             chat_id=event["channel"],
@@ -160,7 +173,7 @@ else:
     except Exception:
         pass
 
-    # send user feedback
+    # Notify user
     try:
         await query.from_user.send_message(response)
     except Exception:
