@@ -50,6 +50,7 @@ DATA_FILE = "bot_persistence.pickle"
 # Получить список админов из окружения (OPTIONAL)
 def get_admin_ids() -> List[int]:
     raw = os.environ.get("ADMIN_IDS", "")
+    print(f"DEBUG (ENV): Сырое значение ADMIN_IDS: '{raw}'") # <-- ОТЛАДКА 1
     if not raw:
         return []
     out = []
@@ -57,6 +58,7 @@ def get_admin_ids() -> List[int]:
         x = x.strip()
         if x.isdigit():
             out.append(int(x))
+    print(f"DEBUG (ENV): Список ADMIN_IDS (Parsed): {out}") # <-- ОТЛАДКА 2
     return out
 
 
@@ -327,6 +329,7 @@ async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
     # АДМИН-ПРОВЕРКА
+    print(f"DEBUG (AUTH): User ID: {user.id}, Is Admin: {is_admin(user.id)}") # <-- ОТЛАДКА 3
     if not is_admin(user.id):
         await update.message.reply_text("⛔️ У вас нет прав для пошагового создания событий.")
         return ConversationHandler.END
