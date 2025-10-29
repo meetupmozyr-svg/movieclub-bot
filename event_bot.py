@@ -148,6 +148,13 @@ async def create_event_command_quick(update: Update, context: ContextTypes.DEFAU
     user = update.effective_user
     if not user:
         return
+        
+    # === ВСТАВИТЬ СЮДА ПРОВЕРКУ АДМИНА ===
+    if not is_admin(user.id):
+        await update.message.reply_text("⛔️ У вас нет прав для быстрого создания событий.")
+        return
+    # =======================================
+    
     if not context.args:
         await update.message.reply_text(
             "Использование:\n/create_event Название | Дата | Вместимость | Место (опционально) | Описание (опционально)"
