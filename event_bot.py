@@ -75,7 +75,7 @@ async def create_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
     location = parts[3] if len(parts) > 3 else ""
     description = parts[4] if len(parts) > 4 else ""
 
-    # Get a new event ID. Uses bot_data for safe, persistent storage.
+    # Get a new event ID.
     event_id = str(max([int(k) for k in context.bot_data['events'].keys()] + [0]) + 1)
 
     event = {
@@ -86,7 +86,7 @@ async def create_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
         "location": location,
         "description": description,
         "creator_id": user.id,
-        "message_id": None,  # Will be filled after sending
+        "message_id": None, 
         "channel": os.environ.get("CHANNEL", "@kinovinomoz"),
         "joined": [],
         "waitlist": []
@@ -111,6 +111,9 @@ async def create_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
     # Now add the message_id to the event and save it *once*
     event["message_id"] = sent.message_id
     context.bot_data["events"][event_id] = event
+    
+    # !!! FIX: Force persistence to save the deep change !!!
+    context.bot_data.update({})
 
     await update.message.reply_text(f"Event created and posted to {event['channel']} (ID {event_id}).")
 
@@ -120,10 +123,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    # Use bot_data as the single source of truth
     data = context.bot_data
     
-    try:action, event_id = query.data.split("|")
+    try:
+        action, event_id = query.data.split("|")
     except (ValueError, AttributeError):
         await query.edit_message_text("Invalid callback data.")
         return
@@ -135,7 +138,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = query.from_user.id
-    user_name = query.from_user.full_name  # Good to have for notifications
 
     # First, always remove user from all lists to handle any state
     if user_id in event["joined"]:
@@ -153,14 +155,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response = "Event is full — you were added to the waitlist 🕒"
     elif action == "leave":
         response = "You are marked as not coming ❌"
-    elif action == "wait":  # This is still here for legacy, but "join" handles it
+    elif action == "wait":  # 'wait' is still handled, though button is now 'join'
         event["waitlist"].append(user_id)
         response = "You were added to the waitlist 🕒"
     else:
         response = "Unknown action."
 
     # --- Waitlist Promotion Logic ---
-    # While there are spots and people on the waitlist, promote them
     while len(event["joined"]) < event["capacity"] and event["waitlist"]:
         promoted_user_id = event["waitlist"].pop(0)
         if promoted_user_id not in event["joined"]:
@@ -174,13 +175,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except (BadRequest, Forbidden) as e:
                 print(f"Failed to notify user {promoted_user_id} of promotion: {e}")
-            except Exception as e:
-                print(f"Unexpected error notifying user {promoted_user_id}: {e}")
     # --------------------------------
 
-    # Persist changes (this is automatic with PicklePersistence,
-    # but explicitly setting it doesn't hurt and ensures state)
+    # Re-assign the event object after all changes
     data["events"][event_id] = event
+    
+    # !!! FIX: Force persistence to save the deep change (the core fix) !!!
+    context.bot_data.update({})
 
     # Update the original message
     try:
@@ -192,36 +193,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
     except (BadRequest, Forbidden) as e:
-        # Common errors: message not modified, or bot can't edit
         print(f"Could not edit event message {event_id}: {e}")
-    except Exception as e:
-        print(f"Unexpected error editing message {event_id}: {e}")
 
     # Send a confirmation to the user who clicked
     try:
-        # Try to send a private message (fails if user hasn't started bot)
         await query.from_user.send_message(response)
     except (BadRequest, Forbidden):
-        # Fallback to an alert on their screen
         await query.answer(text=response, show_alert=True)
-    except Exception as e:
-        print(f"Unexpected error sending response to user {user_id}: {e}")
 
 
 async def my_events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows the user all events they are registered for."""
     user_id = update.effective_user.id
     
-    # Access data safely from context
     data = context.bot_data
     out = []
     
-    # Note: This iterates all events. Can be slow with 10k+ events.
     for e in data["events"].values():
         if user_id in e["joined"]:
             out.append(f"✅ Joined: {e['title']} — {e['date']}")
         elif user_id in e["waitlist"]:
-            out.append(f"🕒 Waitlist: {e['title']} — {e['date']}")if not out:
+            out.append(f"🕒 Waitlist: {e['title']} — {e['date']}")
+            
+    if not out:
         await update.message.reply_text("You have no upcoming RSVPs.")
     else:
         await update.message.reply_text("<b>Your RSVPs:</b>\n\n" + "\n".join(out), parse_mode="HTML")
