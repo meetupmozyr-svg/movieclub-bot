@@ -692,18 +692,44 @@ async def edit_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------- Main / Bootstrap -----------------------------
+# ... (Оставьте все импорты и код до функции main() без изменений) ...
+
+# ---------------------------- Main / Bootstrap (ИСПРАВЛЕНИЕ ДЛЯ WEBHOOK) -----------------------------
 def main():
     token = os.environ.get("BOT_TOKEN")
     if not token:
+        # Эта ошибка всегда должна быть устранена
         raise ValueError("Пожалуйста, установите BOT_TOKEN в окружении.")
 
+    # Переменные для Webhook
+    # 1. PORT: Порт, который будет слушать ваш бот. Render требует открыть порт.
+    #    Мы берем его из окружения (Renderer задаст его сам) или используем 8443 по умолчанию.
+    port = int(os.environ.get('PORT', '8443')) 
+    
+    # 2. WEBHOOK_URL: Полный публичный URL вашего сервиса Render.
+    #    Вам нужно будет установить эту переменную окружения на Render.
+    webhook_url = os.environ.get("WEBHOOK_URL") 
+    if not webhook_url:
+        # Убедитесь, что WEBHOOK_URL установлен в настройках Render
+        raise ValueError("Пожалуйста, установите WEBHOOK_URL (URL вашего сервиса Render) в окружении.")
+
+    # 3. WEBHOOK_PATH: Секретный путь для Telegram, чтобы избежать подбора
+    #    Используем токен бота как часть пути для безопасности.
+    WEBHOOK_PATH = f"/webhook/{token}"
+
     persistence = PicklePersistence(filepath=DATA_FILE)
-    app = ApplicationBuilder().token(token).persistence(persistence).build()
+    
+    app = (
+        ApplicationBuilder()
+        .token(token)
+        .persistence(persistence)
+        .build()
+    )
 
     if "events" not in app.bot_data:
         app.bot_data["events"] = {}
 
-    # базовые хендлеры
+    # базовые хендлеры (ОСТАВЛЕНО БЕЗ ИЗМЕНЕНИЙ)
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("create_event", create_event_command_quick))
     app.add_handler(MessageHandler(filters.PHOTO & filters.Caption(True), create_event_from_photo_message))
@@ -712,7 +738,7 @@ def main():
     app.add_handler(CommandHandler("export_event", export_event_command))
     app.add_handler(CommandHandler("delete_event", delete_event_command))
 
-    # edit conversation
+    # edit conversation (ОСТАВЛЕНО БЕЗ ИЗМЕНЕНИЙ)
     edit_conv = ConversationHandler(
         entry_points=[CommandHandler("edit_event", edit_event_command)],
         states={
@@ -726,17 +752,16 @@ def main():
     )
     app.add_handler(edit_conv)
 
-    # create conversation (пошагово)
+    # create conversation (пошагово) (ОСТАВЛЕНО БЕЗ ИЗМЕНЕНИЙ)
     create_conv = ConversationHandler(
         entry_points=[CommandHandler("create", create_start)],
         states={
-           C_TITLE: [MessageHandler(filters.ALL & ~filters.COMMAND, create_title)],
+            C_TITLE: [MessageHandler(filters.ALL & ~filters.COMMAND, create_title)],
             C_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_date)],
             C_CAPACITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_capacity)],
             C_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_location)],
             C_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_description)],
-            # на этапе фото: либо фото, либо текст "skip"
-           C_PHOTO: [
+            C_PHOTO: [
                 MessageHandler(
                     (filters.PHOTO & ~filters.COMMAND) | (filters.Regex("(?i)^skip$") & ~filters.COMMAND),
                     create_photo_step,
@@ -748,8 +773,14 @@ def main():
     )
     app.add_handler(create_conv)
 
-    print("Бот запущен. Ctrl-C для остановки.")
-    app.run_polling()
+    # 4. ЗАПУСК В РЕЖИМЕ WEBHOOK (вместо app.run_polling())
+    print("Бот запускается в режиме Webhook...")
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=WEBHOOK_PATH,
+        webhook_url=f"{webhook_url}{WEBHOOK_PATH}",
+    )
 
 
 if __name__ == "__main__":
