@@ -11,6 +11,7 @@
 import os
 import io
 import csv
+import re
 from typing import Dict, List, Any
 from telegram import (
     InlineKeyboardButton,
@@ -719,9 +720,9 @@ def main():
             C_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_location)],
             C_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_description)],
             # на этапе фото: либо фото, либо текст "skip"
-            C_PHOTO: [
+           C_PHOTO: [
                 MessageHandler(
-                    (filters.PHOTO & ~filters.COMMAND) | (filters.Regex("^(?i)skip$") & ~filters.COMMAND),
+                    (filters.PHOTO & ~filters.COMMAND) | (filters.Regex("^skip$", flags=re.IGNORECASE) & ~filters.COMMAND),
                     create_photo_step,
                 )
             ],
