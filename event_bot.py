@@ -714,7 +714,7 @@ def main():
     create_conv = ConversationHandler(
         entry_points=[CommandHandler("create", create_start)],
         states={
-            C_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_title)],
+           C_TITLE: [MessageHandler(filters.ALL & ~filters.COMMAND, create_title)],
             C_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_date)],
             C_CAPACITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_capacity)],
             C_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_location)],
