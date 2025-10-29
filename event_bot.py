@@ -117,27 +117,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = query.from_user.id
+if user_id in event["waitlist"]:
+    event["waitlist"].remove(user_id)
 
-    # remove user from any list first
-    if user_id in event["joined"]:
-        event["joined"].remove(user_id)
-    if user_id in event["waitlist"]:
-        event["waitlist"].remove(user_id)
-
-    if action == "join":
-        if len(event["joined"]) < event["capacity"]:
-            event["joined"].append(user_id)
-            response = "You are registered ✅"
-            else:
-            event["waitlist"].append(user_id)
-            response = "Event is full — you were added to the waitlist 🕒"
-    elif action == "leave":
-        response = "You are marked as not coming ❌"
-    elif action == "wait":
-        event["waitlist"].append(user_id)
-        response = "You were added to the waitlist 🕒"
+if action == "join":
+    if len(event["joined"]) < event["capacity"]:
+        event["joined"].append(user_id)
+        response = "You are registered ✅"
     else:
-        response = "Unknown action."
+        event["waitlist"].append(user_id)
+        response = "Event is full — you were added to the waitlist 🕒"
+elif action == "leave":
+    response = "You are marked as not coming ❌"
+elif action == "wait":
+    event["waitlist"].append(user_id)
+    response = "You were added to the waitlist 🕒"
+else:
+    response = "Unknown action."
 
     # promote if space opened
     while len(event["joined"]) < event["capacity"] and event["waitlist"]:
