@@ -2,9 +2,11 @@
 """
 Финальный вариант Telegram бота для создания мероприятий с пошаговым вводом.
 
-ОТЛИЧИЕ ОТ ПРЕДЫДУЩЕЙ ВЕРСИИ: УДАЛЕНЫ ВСЕ ПРОВЕРКИ АДМИНА
-для команд /create, /create_event и создания через фото, 
-что позволяет ЛЮБОМУ пользователю создавать события.
+ИСПРАВЛЕНИЯ В ЭТОЙ ВЕРСИИ:
+1. Исправлена логика редактирования фото (Field 6) для корректной замены медиафайла 
+   и переключения между фото-сообщением и текстовым сообщением.
+2. Усилена команда /my_events для надежного поиска записей пользователя, 
+   даже если в хранилище смешались типы данных ID (int/str).
 
 Совместимость: python-telegram-bot v20+
 Запуск: установить BOT_TOKEN, CHANNEL, PORT, WEBHOOK_URL в переменных окружения.
@@ -21,6 +23,7 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
     InputFile,
+    InputMediaPhoto, # <-- ИСПРАВЛЕНИЕ: Добавлен импорт для редактирования фото
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -82,6 +85,7 @@ def users_list_repr(users: List[Dict[str, Any]]) -> str:
         return "(пусто)"
     lines = []
     for u in users:
+        # ID должен быть числом, но на всякий случай переводим в str для URL
         uid = u.get("id")
         name = u.get("name", str(uid))
         username = u.get("username")
@@ -137,6 +141,7 @@ async def update_event_message(context: ContextTypes.DEFAULT_TYPE, event_id: str
     """Утилита для редактирования сообщения в канале с учетом наличия фото."""
     try:
         if event.get("photo_id"):
+            # Если есть photo_id, редактируем CAPTION (текст)
             await context.bot.edit_message_caption(
                 chat_id=event["channel"],
                 message_id=event["message_id"],
@@ -145,6 +150,7 @@ async def update_event_message(context: ContextTypes.DEFAULT_TYPE, event_id: str
                 parse_mode="HTML",
             )
         else:
+            # Если нет photo_id, редактируем TEXT
             await context.bot.edit_message_text(
                 chat_id=event["channel"],
                 message_id=event["message_id"],
@@ -190,8 +196,6 @@ async def create_event_command_quick(update: Update, context: ContextTypes.DEFAU
     if not user:
         return
         
-    # <<< ПРОВЕРКА АДМИНА УДАЛЕНА >>>
-    
     if not context.args:
         await update.message.reply_text(
             "Использование:\n/create_event Название | Дата | Вместимость | Место (опционально) | Описание (опционально)"
@@ -262,8 +266,6 @@ async def create_event_from_photo_message(update: Update, context: ContextTypes.
     if not user or not msg:
         return
         
-    # <<< ПРОВЕРКА АДМИНА УДАЛЕНА >>>
-        
     caption = msg.caption or ""
     parts = [p.strip() for p in caption.split("|")]
     if len(parts) < 3:
@@ -329,8 +331,6 @@ async def create_event_from_photo_message(update: Update, context: ContextTypes.
 async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    # <<< ПРОВЕРКА АДМИНА УДАЛЕНА >>>
-    
     await update.message.reply_text("Создаём событие — шаг 1/6.\nПришли название события:")
     context.user_data["new_event"] = {}
     return C_TITLE
@@ -382,6 +382,7 @@ async def create_photo_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text and update.message.text.strip().lower() == "skip":
         photo_id = None
     elif update.message.photo:
+        # Если прислали фото с подписью, берем только фото
         photo_id = update.message.photo[-1].file_id
     else:
         # Если не фото и не 'skip', просим повторить
@@ -492,6 +493,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # promote from waitlist if space freed
     while len(event["joined"]) < event["capacity"] and event["waitlist"]:
         promoted = event["waitlist"].pop(0)
+        # Добавлена проверка на дублирование ID (хотя выше уже чистили списки)
         if promoted["id"] not in [u["id"] for u in event["joined"]]:
             event["joined"].append(promoted)
             try:
@@ -526,13 +528,18 @@ async def my_events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user:
         return
-    uid = user.id
+    
+    # ИСПРАВЛЕНИЕ: Преобразуем ID пользователя в строку для надежного сравнения 
+    # (защита от неконсистентности типов в персистенсе)
+    uid_str = str(user.id) 
     events = context.bot_data.get("events", {})
     out = []
     for e in events.values():
-        if any(u["id"] == uid for u in e.get("joined", [])):
+        # ИСПРАВЛЕНИЕ: Сравниваем строковые представления ID
+        if any(str(u.get("id")) == uid_str for u in e.get("joined", [])):
             out.append(f"✅ Записан: {e['title']} — {e['date']} (ID {e['id']})")
-        elif any(u["id"] == uid for u in e.get("waitlist", [])):
+        # ИСПРАВЛЕНИЕ: Сравниваем строковые представления ID
+        elif any(str(u.get("id")) == uid_str for u in e.get("waitlist", [])):
             out.append(f"🕒 Лист ожидания: {e['title']} — {e['date']} (ID {e['id']})")
     if not out:
         await update.message.reply_text("У вас нет записей.")
@@ -725,7 +732,7 @@ async def edit_select_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["edit_field"] = int(txt)
     if txt == "6":
-        await update.message.reply_text("Пришли новое фото (или 'remove' чтобы убрать фото).")
+        await update.message.reply_text("Пришли новое фото сейчас, либо отправь 'remove' чтобы удалить фото.")
     else:
         await update.message.reply_text("Пришли новое значение для выбранного поля:")
     return EDIT_NEW_VALUE
@@ -746,6 +753,10 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if fld is None:
         await update.message.reply_text("Поле не выбрано.")
         return ConversationHandler.END
+    
+    # Флаг для контроля, нужно ли делать общий update_event_message в конце
+    needs_final_update = True 
+
     try:
         if fld == 1:
             event["title"] = update.message.text.strip()
@@ -768,25 +779,27 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
             event["description"] = update.message.text.strip()
         elif fld == 6:
             txt = (update.message.text or "").strip().lower()
+            current_photo_id = event.get("photo_id") # Текущий ID фото
+
             if txt == "remove":
-                # Если фото было, пытаемся удалить его в канале
-                if event.get("photo_id"):
+                # Переход Photo -> Text-only: удаляем старое сообщение с фото, отправляем новое текстовое
+                needs_final_update = False # Отправка происходит внутри блока
+                if current_photo_id:
                     try:
-                        # Удаление сообщения и пересылка текстового
                         await context.bot.delete_message(chat_id=event["channel"], message_id=event["message_id"])
                         sent = await context.bot.send_message(
                             chat_id=event["channel"],
-                            text=format_event_message(event), # пока без фото
+                            text=format_event_message(event), 
                             reply_markup=make_event_keyboard(event_id, event),
                             parse_mode="HTML",
                             disable_web_page_preview=True,
                         )
                         event["message_id"] = sent.message_id
+                        await update.message.reply_text("Фото удалено. Событие обновлено на текстовое.")
                     except Exception as e:
                         print(f"Не удалось удалить старое сообщение с фото: {e}")
                         await update.message.reply_text("Не удалось удалить старое сообщение с фото, но данные обновлены. Попробуйте удалить событие вручную.")
-                        # Оставим message_id, чтобы избежать дальнейших ошибок
-                        pass
+                        needs_final_update = True # Попробуем обновить через edit_text (может сработать)
                 event["photo_id"] = None
 
             else:
@@ -795,10 +808,32 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return EDIT_NEW_VALUE
                 
                 new_photo_id = update.message.photo[-1].file_id
+                event["photo_id"] = new_photo_id # Обновляем ID в данных
 
-                # Если фото не было, но теперь есть: удаляем старое текстовое сообщение и отправляем новое фото
-                if not event.get("photo_id"):
-                     try:
+                if current_photo_id:
+                    # ИСПРАВЛЕНИЕ: Photo -> Photo: используем edit_message_media
+                    needs_final_update = False
+                    try:
+                        await context.bot.edit_message_media(
+                            chat_id=event["channel"],
+                            message_id=event["message_id"],
+                            media=InputMediaPhoto(
+                                media=new_photo_id, 
+                                caption=format_event_message(event), 
+                                parse_mode="HTML"
+                            ),
+                            reply_markup=make_event_keyboard(event_id, event),
+                        )
+                        await update.message.reply_text("Фотография успешно заменена.")
+                    except Exception as e:
+                        print(f"Не удалось обновить медиа сообщения: {e}")
+                        await update.message.reply_text(f"Не удалось обновить фото в канале (ошибка: {e}). Попробуйте удалить и создать заново.")
+                        needs_final_update = True # Попробуем обновить через edit_caption (маловероятно, но безопасно)
+
+                elif not current_photo_id:
+                    # Переход Text-only -> Photo: удаляем старое текстовое сообщение и отправляем новое фото
+                    needs_final_update = False
+                    try:
                         await context.bot.delete_message(chat_id=event["channel"], message_id=event["message_id"])
                         sent = await context.bot.send_photo(
                             chat_id=event["channel"],
@@ -808,22 +843,25 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             parse_mode="HTML",
                         )
                         event["message_id"] = sent.message_id
-                     except Exception as e:
-                        print(f"Не удалось заменить текстовое сообщение на фото: {e}")
+                        await update.message.reply_text("Фото добавлено. Событие обновлено на фото-сообщение.")
+                    except Exception as e:
+                        print(f"Не удалось заменить текстовое сообщение на сообщение с фото: {e}")
                         await update.message.reply_text("Не удалось заменить текстовое сообщение на сообщение с фото. Попробуйте удалить событие вручную.")
-                        pass # Продолжаем сохранение данных
+                        needs_final_update = True # Попробуем обновить через edit_text (может сработать)
 
-                event["photo_id"] = new_photo_id
         # сохранить и обновить
         events[event_id] = event
         context.bot_data["events"] = events
         context.bot_data.update({})
         
-        # Обновляем сообщение в канале (если не было полной пересылки выше)
-        if fld != 6 or (fld == 6 and event.get("photo_id") is not None and update.message.photo):
+        # Обновляем сообщение в канале только если это не было сделано внутри fld == 6
+        if needs_final_update:
              await update_event_message(context, event_id, event, update.message.chat_id)
         
-        await update.message.reply_text("Событие обновлено.")
+        # Если это было не поле 6, подтверждаем обновление
+        if fld != 6:
+            await update.message.reply_text("Событие обновлено.")
+
     except ValueError:
         await update.message.reply_text("Для вместимости нужно положительное целое число. Попробуй ещё раз.")
         return EDIT_NEW_VALUE
