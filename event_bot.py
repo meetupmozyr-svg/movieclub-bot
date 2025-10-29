@@ -5,8 +5,7 @@
 
 Совместимость: python-telegram-bot v20+
 Запуск: установить BOT_TOKEN, CHANNEL, PORT, WEBHOOK_URL в переменных окружения.
-Опции админов: ADMIN_IDS (comma-separated IDs, e.g., 123456789,987654321) — необязательно.
-ВАЖНО: ID в ADMIN_IDS должны быть указаны как ЧИСЛА, без кавычек и других символов.
+Опции админов: ADMIN_IDS (comma-separated IDs) — необязательно.
 """
 
 import os
@@ -50,7 +49,6 @@ DATA_FILE = "bot_persistence.pickle"
 # Получить список админов из окружения (OPTIONAL)
 def get_admin_ids() -> List[int]:
     raw = os.environ.get("ADMIN_IDS", "")
-    print(f"DEBUG (ENV): Сырое значение ADMIN_IDS: '{raw}'") # <-- ОТЛАДКА 1
     if not raw:
         return []
     out = []
@@ -58,7 +56,6 @@ def get_admin_ids() -> List[int]:
         x = x.strip()
         if x.isdigit():
             out.append(int(x))
-    print(f"DEBUG (ENV): Список ADMIN_IDS (Parsed): {out}") # <-- ОТЛАДКА 2
     return out
 
 
@@ -329,7 +326,6 @@ async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
     # АДМИН-ПРОВЕРКА
-    print(f"DEBUG (AUTH): User ID: {user.id}, Is Admin: {is_admin(user.id)}") # <-- ОТЛАДКА 3
     if not is_admin(user.id):
         await update.message.reply_text("⛔️ У вас нет прав для пошагового создания событий.")
         return ConversationHandler.END
@@ -383,16 +379,10 @@ async def create_description(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def create_photo_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Логика для определения, пропустить ли фото или использовать его
     if update.message.text and update.message.text.strip().lower() == "skip":
         photo_id = None
-    elif update.message.photo:
-        photo_id = update.message.photo[-1].file_id
     else:
-        # Если пришло что-то другое, кроме фото или skip
-        await update.message.reply_text("Ожидаю фото, текст 'skip' или команду /cancel.")
-        return C_PHOTO
-
+        photo_id = update.message.photo[-1].file_id
 
     if "events" not in context.bot_data:
         context.bot_data["events"] = {}
@@ -834,15 +824,15 @@ def main():
     if "events" not in app.bot_data:
         app.bot_data["events"] = {}
 
-    # 1. Базовые хендлеры (команды)
+    # базовые хендлеры
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("create_event", create_event_command_quick))
     app.add_handler(CommandHandler("my_events", my_events_command))
     app.add_handler(CommandHandler("export_event", export_event_command))
     app.add_handler(CommandHandler("delete_event", delete_event_command))
-    app.add_handler(CommandHandler("remove_participant", remove_participant_command))
-
-    # 2. Хендлер для создания события с фото (с подписью)
+    app.add_handler(CommandHandler("remove_participant", remove_participant_command)) # Новый админ-хендлер
+    
+    # Хендлер для создания события с фото (с подписью)
     app.add_handler(
         MessageHandler(
             filters.PHOTO & filters.CAPTION,
@@ -850,10 +840,10 @@ def main():
         )
     )
 
-    # 3. Хендлер для кнопок (join/leave)
+    # Хендлер для кнопок
     app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(join|leave)\|\d+$"))
 
-    # 4. Хендлер для пошагового создания (ConversationHandler)
+    # Хендлер для пошагового создания
     create_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("create", create_start)],
         states={
@@ -863,12 +853,8 @@ def main():
             C_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_location)],
             C_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_description)],
             C_PHOTO: [
-                # Обработка фото
                 MessageHandler(filters.PHOTO & ~filters.COMMAND, create_photo_step),
-                # Обработка текста 'skip' (с помощью re.compile для игнорирования регистра)
-                MessageHandler(filters.Regex(re.compile("^skip$", re.IGNORECASE)), create_photo_step), 
-                # Обработка любого другого текста (чтобы избежать пропуска шага)
-                MessageHandler(filters.TEXT & ~filters.COMMAND, create_photo_step),
+                MessageHandler(filters.Regex("^skip$"), create_photo_step),
             ],
         },
         fallbacks=[CommandHandler("cancel", create_cancel)],
@@ -877,13 +863,12 @@ def main():
     )
     app.add_handler(create_conv_handler)
     
-    # 5. Хендлер для редактирования (ConversationHandler)
+    # Хендлер для редактирования
     edit_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("edit_event", edit_event_command)],
         states={
             EDIT_SELECT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_select_field)],
             EDIT_NEW_VALUE: [
-                # Обрабатываем текст ('remove', новое значение) или фото
                 MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, edit_new_value),
             ],
         },
