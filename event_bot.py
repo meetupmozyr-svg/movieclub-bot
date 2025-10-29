@@ -64,7 +64,6 @@ ADMIN_IDS = get_admin_ids()
 # ---------------------------- Утилиты -------------------------------------
 def user_entry(from_user) -> Dict[str, Any]:
     """Создаёт запись пользователя для списка участников."""
-    # <<< ИЗМЕНЕНО: Добавляем user_id в имя, чтобы избежать конфликтов при отсутствии username >>>
     name = from_user.full_name or from_user.first_name or str(from_user.id)
     return {
         "id": from_user.id,
@@ -128,7 +127,7 @@ def is_admin(user_id: int, event: Dict[str, Any] = None) -> bool:
         return True
     return False
 
-# <<< ДОБАВЛЕНО: Утилита для обновления сообщения в канале (чтобы не дублировать код) >>>
+# Утилита для обновления сообщения в канале
 async def update_event_message(context: ContextTypes.DEFAULT_TYPE, event_id: str, event: Dict[str, Any], chat_id_for_reply: int):
     try:
         if event.get("photo_id"):
@@ -174,7 +173,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/export_event <id> — экспорт участников (только админ/создатель)\n"
         "/delete_event <id> — удалить событие (только админ/создатель)\n"
         "/edit_event <id> — редактировать событие (пошагово, только админ/создатель)\n"
-        "/remove_participant <id> <user_id> — удалить участника (только админ)\n" # <<< ИЗМЕНЕНО: Добавлена новая команда >>>
+        "/remove_participant <id> <user_id> — удалить участника (только админ)\n" 
     )
 
 
@@ -184,7 +183,7 @@ async def create_event_command_quick(update: Update, context: ContextTypes.DEFAU
     if not user:
         return
         
-    # <<< ИЗМЕНЕНО: Проверка администратора >>>
+    # АДМИН-ПРОВЕРКА
     if not is_admin(user.id):
         await update.message.reply_text("⛔️ У вас нет прав для быстрого создания событий.")
         return
@@ -257,7 +256,7 @@ async def create_event_from_photo_message(update: Update, context: ContextTypes.
     if not user or not msg:
         return
         
-    # <<< ИЗМЕНЕНО: Проверка администратора >>>
+    # АДМИН-ПРОВЕРКА
     if not is_admin(user.id):
         await msg.reply_text("⛔️ У вас нет прав для создания событий с фото.")
         return
@@ -311,6 +310,7 @@ async def create_event_from_photo_message(update: Update, context: ContextTypes.
             caption=text,
             reply_markup=kb,
             parse_mode="HTML",
+            disable_web_page_preview=True,
         )
     except Exception as e:
         await msg.reply_text(f"Ошибка отправки фото: {e}")
@@ -325,7 +325,7 @@ async def create_event_from_photo_message(update: Update, context: ContextTypes.
 async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    # <<< ИЗМЕНЕНО: Проверка администратора >>>
+    # АДМИН-ПРОВЕРКА
     if not is_admin(user.id):
         await update.message.reply_text("⛔️ У вас нет прав для пошагового создания событий.")
         return ConversationHandler.END
@@ -505,7 +505,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.update({})
 
     # обновляем сообщение в канале (edit_caption для фото, edit_text для текста)
-    await update_event_message(context, event_id, event, query.from_user.id) # <<< ИЗМЕНЕНО: Используем утилиту >>>
+    await update_event_message(context, event_id, event, query.from_user.id) 
 
     # отправляем подтверждение пользователю (лично или alert)
     try:
@@ -534,7 +534,6 @@ async def my_events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # -------------------------- Admin: export / delete / edit / remove_participant ------------------
-# <<< ДОБАВЛЕНО: НОВАЯ АДМИН КОМАНДА ДЛЯ УДАЛЕНИЯ УЧАСТНИКА >>>
 async def remove_participant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user:
@@ -621,7 +620,6 @@ async def remove_participant_command(update: Update, context: ContextTypes.DEFAU
             f"❗️ Пользователь ID **{user_to_remove_id}** не найден в списках события **{event_id}**.",
             parse_mode="Markdown"
         )
-# <<< КОНЕЦ ДОБАВЛЕННОЙ КОМАНДЫ >>>
 
 async def export_event_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -774,7 +772,6 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.bot_data["events"] = events
         context.bot_data.update({})
         
-        # <<< ИЗМЕНЕНО: Используем утилиту для обновления сообщения >>>
         await update_event_message(context, event_id, event, update.message.chat_id)
         
         await update.message.reply_text("Событие обновлено.")
@@ -808,15 +805,12 @@ def main():
 
     WEBHOOK_PATH = f"/webhook/{token}"
 
-    # --- КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: БЕЗОПАСНАЯ ИНИЦИАЛИЗАЦИЯ ПЕРСИСТЕНСА ---
+    # --- БЕЗОПАСНАЯ ИНИЦИАЛИЗАЦИЯ ПЕРСИСТЕНСА ---
     try:
-        # Пытаемся загрузить персистенс
         persistence = PicklePersistence(filepath=DATA_FILE)
         print("Персистенс загружен успешно.")
     except Exception as e:
-        # Если загрузка не удалась (файл поврежден или устарел), начинаем с чистых данных
         print(f"ВНИМАНИЕ: Ошибка загрузки персистенса ({e}). Начинаем с чистых данных.")
-        # on_flush=False предотвращает немедленную запись пустого файла (опционально, но безопасно)
         persistence = PicklePersistence(filepath=DATA_FILE, on_flush=False)
     # ----------------------------------------------------------------------
     
@@ -833,58 +827,65 @@ def main():
     # базовые хендлеры
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("create_event", create_event_command_quick))
-    app.add_handler(MessageHandler(filters.PHOTO & filters.Caption(True), create_event_from_photo_message))
     app.add_handler(CommandHandler("my_events", my_events_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CommandHandler("export_event", export_event_command))
     app.add_handler(CommandHandler("delete_event", delete_event_command))
-    # <<< ДОБАВЛЕНО: Регистрация новой админ команды >>>
-    app.add_handler(CommandHandler("remove_participant", remove_participant_command))
-
-    # edit conversation
-    edit_conv = ConversationHandler(
-        entry_points=[CommandHandler("edit_event", edit_event_command)],
-        states={
-            EDIT_SELECT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_select_field)],
-            EDIT_NEW_VALUE: [
-                MessageHandler((filters.PHOTO & ~filters.COMMAND) | (filters.TEXT & ~filters.COMMAND), edit_new_value)
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", edit_cancel)],
-        # conversation_timeout=300, # <<< УДАЛЕНО: Убран таймаут, чтобы не было предупреждений >>>
+    app.add_handler(CommandHandler("remove_participant", remove_participant_command)) # Новый админ-хендлер
+    
+    # Хендлер для создания события с фото (с подписью)
+    app.add_handler(
+        MessageHandler(
+            filters.PHOTO & filters.CAPTION,
+            create_event_from_photo_message
+        )
     )
-    app.add_handler(edit_conv)
 
-    # create conversation (пошагово)
-    create_conv = ConversationHandler(
+    # Хендлер для кнопок
+    app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(join|leave)\|\d+$"))
+
+    # Хендлер для пошагового создания
+    create_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("create", create_start)],
         states={
-            C_TITLE: [MessageHandler(filters.ALL & ~filters.COMMAND, create_title)],
+            C_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_title)],
             C_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_date)],
             C_CAPACITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_capacity)],
             C_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_location)],
             C_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_description)],
             C_PHOTO: [
-                MessageHandler(
-                    (filters.PHOTO & ~filters.COMMAND) | (filters.Regex("(?i)^skip$") & ~filters.COMMAND),
-                    create_photo_step,
-                )
+                MessageHandler(filters.PHOTO & ~filters.COMMAND, create_photo_step),
+                MessageHandler(filters.Regex("^skip$"), create_photo_step),
             ],
         },
         fallbacks=[CommandHandler("cancel", create_cancel)],
-        # conversation_timeout=600, # <<< УДАЛЕНО: Убран таймаут, чтобы не было предупреждений >>>
+        persistent=True,
+        name="create_conversation",
     )
-    app.add_handler(create_conv)
+    app.add_handler(create_conv_handler)
+    
+    # Хендлер для редактирования
+    edit_conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("edit_event", edit_event_command)],
+        states={
+            EDIT_SELECT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_select_field)],
+            EDIT_NEW_VALUE: [
+                MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, edit_new_value),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", edit_cancel)],
+        persistent=True,
+        name="edit_conversation",
+    )
+    app.add_handler(edit_conv_handler)
 
-    # 4. ЗАПУСК В РЕЖИМЕ WEBHOOK
-    print("Бот запускается в режиме Webhook...")
+    # Запуск бота через Webhook (для Render/Heroku)
+    print("Бот настроен. Запуск в режиме Webhook...")
     app.run_webhook(
         listen="0.0.0.0",
         port=port,
         url_path=WEBHOOK_PATH,
-        webhook_url=f"{webhook_url}{WEBHOOK_PATH}",
+        webhook_url=webhook_url + WEBHOOK_PATH,
     )
-
 
 if __name__ == "__main__":
     main()
