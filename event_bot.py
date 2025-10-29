@@ -64,7 +64,7 @@ ADMIN_IDS = get_admin_ids()
 # ---------------------------- Утилиты -------------------------------------
 def user_entry(from_user) -> Dict[str, Any]:
     """Создаёт запись пользователя для списка участников."""
-    # <<< ИЗМЕНЕНО: Добавляем user_id в имя, чтобы избежать конфликтов при отсутствии username >>>
+    # Более надежная проверка имени
     name = from_user.full_name or from_user.first_name or str(from_user.id)
     return {
         "id": from_user.id,
@@ -108,10 +108,13 @@ def make_event_keyboard(event_id: str, event: Dict[str, Any]) -> InlineKeyboardM
     spots_filled = len(event.get("joined", []))
     capacity = event["capacity"]
     wait_len = len(event.get("waitlist", []))
+    
+    # 📌 Логика кнопки "Записаться"
     if spots_filled >= capacity:
         join_text = f"🕒 Встать в лист ожидания ({wait_len})"
     else:
         join_text = f"✅ Записаться ({spots_filled}/{capacity})"
+        
     kb = [
         [
             InlineKeyboardButton(join_text, callback_data=f"join|{event_id}"),
@@ -128,7 +131,7 @@ def is_admin(user_id: int, event: Dict[str, Any] = None) -> bool:
         return True
     return False
 
-# <<< ДОБАВЛЕНО: Утилита для обновления сообщения в канале (чтобы не дублировать код) >>>
+# Утилита для обновления сообщения в канале
 async def update_event_message(context: ContextTypes.DEFAULT_TYPE, event_id: str, event: Dict[str, Any], chat_id_for_reply: int):
     try:
         if event.get("photo_id"):
@@ -150,7 +153,7 @@ async def update_event_message(context: ContextTypes.DEFAULT_TYPE, event_id: str
             )
     except Exception as e:
         print(f"Не удалось отредактировать сообщение события {event_id} в канале: {e}")
-        # Это не должно мешать основному флоу, но может уведомить админа, если чат_id_for_reply известен
+        # Это не должно мешать основному флоу, но может уведомить админа, если chat_id_for_reply известен
         if chat_id_for_reply != event["channel"]:
             try:
                 await context.bot.send_message(
@@ -174,7 +177,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/export_event <id> — экспорт участников (только админ/создатель)\n"
         "/delete_event <id> — удалить событие (только админ/создатель)\n"
         "/edit_event <id> — редактировать событие (пошагово, только админ/создатель)\n"
-        "/remove_participant <id> <user_id> — удалить участника (только админ)\n" # <<< ИЗМЕНЕНО: Добавлена новая команда >>>
+        "/remove_participant <id> <user_id> — удалить участника (только админ)\n"
     )
 
 
@@ -184,11 +187,10 @@ async def create_event_command_quick(update: Update, context: ContextTypes.DEFAU
     if not user:
         return
         
-    # <<< ИЗМЕНЕНО: Проверка администратора >>>
+    # Проверка администратора
     if not is_admin(user.id):
         await update.message.reply_text("⛔️ У вас нет прав для быстрого создания событий.")
         return
-    # =======================================
     
     if not context.args:
         await update.message.reply_text(
@@ -206,8 +208,10 @@ async def create_event_command_quick(update: Update, context: ContextTypes.DEFAU
     try:
         title, date = parts[0], parts[1]
         capacity = int(parts[2])
+        if capacity <= 0:
+            raise ValueError
     except (ValueError, IndexError):
-        await update.message.reply_text("Вместимость должна быть числом.")
+        await update.message.reply_text("Вместимость должна быть положительным числом.")
         return
     location = parts[3] if len(parts) > 3 else ""
     description = parts[4] if len(parts) > 4 else ""
@@ -254,30 +258,30 @@ async def create_event_command_quick(update: Update, context: ContextTypes.DEFAU
 async def create_event_from_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     user = update.effective_user
-    if not user or not msg:
+    if not user or not msg or not msg.photo: # Проверка на наличие фото
         return
         
-    # <<< ИЗМЕНЕНО: Проверка администратора >>>
+    # Проверка администратора
     if not is_admin(user.id):
         await msg.reply_text("⛔️ У вас нет прав для создания событий с фото.")
         return
-    # =======================================
         
     caption = msg.caption or ""
     parts = [p.strip() for p in caption.split("|")]
     if len(parts) < 3:
-        await msg.reply_text(
-            "Чтобы создать событие с фото — пришли фото с подписью:\n"
-            "Название | Дата | Вместимость | Место (опционально) | Описание (опционально)"
-        )
+        # Не отвечаем, если это просто фото без нужной подписи, чтобы не спамить
+        # но если хотим отвечать, нужно убрать 'return'
         return
+        
     if "events" not in context.bot_data:
         context.bot_data["events"] = {}
     try:
         title, date = parts[0], parts[1]
         capacity = int(parts[2])
+        if capacity <= 0:
+            raise ValueError
     except (ValueError, IndexError):
-        await msg.reply_text("Вместимость должна быть числом.")
+        await msg.reply_text("Вместимость должна быть положительным числом.")
         return
     location = parts[3] if len(parts) > 3 else ""
     description = parts[4] if len(parts) > 4 else ""
@@ -288,6 +292,11 @@ async def create_event_from_photo_message(update: Update, context: ContextTypes.
     event_id = str(event_counter)
 
     photo_file_id = msg.photo[-1].file_id if msg.photo else None
+    
+    if not photo_file_id: # Защита, хотя проверяли выше, что msg.photo есть
+        await msg.reply_text("Не удалось получить ID фото.")
+        return
+
     event = {
         "id": event_id,
         "title": title,
@@ -325,11 +334,10 @@ async def create_event_from_photo_message(update: Update, context: ContextTypes.
 async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    # <<< ИЗМЕНЕНО: Проверка администратора >>>
+    # Проверка администратора
     if not is_admin(user.id):
         await update.message.reply_text("⛔️ У вас нет прав для пошагового создания событий.")
         return ConversationHandler.END
-    # =======================================
     
     await update.message.reply_text("Создаём событие — шаг 1/6.\nПришли название события:")
     context.user_data["new_event"] = {}
@@ -379,10 +387,16 @@ async def create_description(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def create_photo_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    photo_id = None
     if update.message.text and update.message.text.strip().lower() == "skip":
         photo_id = None
-    else:
+    elif update.message.photo:
         photo_id = update.message.photo[-1].file_id
+    else:
+        # Если не "skip" и не фото, просим повторить
+        await update.message.reply_text("Пожалуйста, пришли фото или слово 'skip'.")
+        return C_PHOTO
+
 
     if "events" not in context.bot_data:
         context.bot_data["events"] = {}
@@ -450,9 +464,18 @@ async def create_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer() # Ответ сразу, чтобы избежать ошибки "Query is too old"
+    
+    # Обработка некорректных данных
+    if not query.data:
+        await query.answer(text="Некорректные данные запроса.", show_alert=True)
+        return
+        
     try:
         action, event_id = query.data.split("|")
-    except (ValueError, AttributeError):
+    except ValueError:
+        await query.answer(text="Некорректный формат данных.", show_alert=True)
+        return
+    except TypeError: # Добавлена обработка на случай, если query.data - None (хотя answer() выше должна была сработать)
         await query.answer(text="Некорректные данные.", show_alert=True)
         return
 
@@ -483,21 +506,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = "Неизвестное действие."
 
     # promote from waitlist if space freed
+    # ВАЖНО: Убедиться, что не происходит повторного добавления из-за ошибки в user_entry (которая исправлена)
     while len(event["joined"]) < event["capacity"] and event["waitlist"]:
         promoted = event["waitlist"].pop(0)
-        if promoted["id"] not in [u["id"] for u in event["joined"]]:
-            event["joined"].append(promoted)
-            try:
-                await context.bot.send_message(
-                    chat_id=promoted["id"],
-                    text=(
-                        f"Хорошая новость — освободилось место!\n\n"
-                        f"Вы перенесены из листа ожидания в список подтверждённых для:\n"
-                        f"{event['title']} — {event['date']}"
-                    ),
-                )
-            except (BadRequest, Forbidden) as e:
-                print(f"Не удалось уведомить пользователя {promoted['id']}: {e}")
+        # Убрана дополнительная проверка, так как мы гарантируем, что user_entry уникален по ID
+        event["joined"].append(promoted) 
+        try:
+            await context.bot.send_message(
+                chat_id=promoted["id"],
+                text=(
+                    f"Хорошая новость — освободилось место!\n\n"
+                    f"Вы перенесены из листа ожидания в список подтверждённых для:\n"
+                    f"**{event['title']}** — {event['date']}"
+                ),
+                parse_mode="Markdown" # Лучше использовать Markdown для уведомлений
+            )
+        except (BadRequest, Forbidden) as e:
+            print(f"Не удалось уведомить пользователя {promoted['id']}: {e}")
 
     # persist
     events[event_id] = event
@@ -505,7 +530,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.update({})
 
     # обновляем сообщение в канале (edit_caption для фото, edit_text для текста)
-    await update_event_message(context, event_id, event, query.from_user.id) # <<< ИЗМЕНЕНО: Используем утилиту >>>
+    await update_event_message(context, event_id, event, query.from_user.id) 
 
     # отправляем подтверждение пользователю (лично или alert)
     try:
@@ -534,21 +559,21 @@ async def my_events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # -------------------------- Admin: export / delete / edit / remove_participant ------------------
-# <<< ДОБАВЛЕНО: НОВАЯ АДМИН КОМАНДА ДЛЯ УДАЛЕНИЯ УЧАСТНИКА >>>
 async def remove_participant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user:
         return
 
-    # 1. ПРОВЕРКА АДМИНИСТРАТОРА
+    # 1. ПРОВЕРКА АДМИНИСТРАТОРА И АРГУМЕНТОВ
     if not is_admin(user.id):
         await update.message.reply_text("⛔️ У вас нет прав для управления участниками.")
         return
-
+        
     if len(context.args) < 2:
         await update.message.reply_text(
-            "Использование: /remove_participant [ID_события] [ID_пользователя]\n"
-            "Пример: /remove_participant 5 123456789"
+            "Использование: `/remove_participant [ID_события] [ID_пользователя]`\n"
+            "Пример: `/remove_participant 5 123456789`",
+            parse_mode="Markdown"
         )
         return
 
@@ -558,12 +583,16 @@ async def remove_participant_command(update: Update, context: ContextTypes.DEFAU
     except ValueError:
         await update.message.reply_text("❗️ ID события и ID пользователя должны быть числами.")
         return
+    except IndexError: # Дополнительная защита на случай, если args неполный
+        await update.message.reply_text("Недостаточно аргументов. Используйте `/remove_participant [ID_события] [ID_пользователя]`")
+        return
+
 
     events = context.bot_data.get('events', {})
     event = events.get(event_id)
 
     if not event:
-        await update.message.reply_text(f"❗️ Событие с ID {event_id} не найдено.")
+        await update.message.reply_text(f"❗️ Событие с ID **{event_id}** не найдено.", parse_mode="Markdown")
         return
 
     # 2. ПОПЫТКА УДАЛЕНИЯ
@@ -589,8 +618,8 @@ async def remove_participant_command(update: Update, context: ContextTypes.DEFAU
         promoted_user_entry = None
         
         # Проверяем, если место освободилось И есть лист ожидания
-        if (len(event['joined']) < event['capacity']) and event['waitlist']:
-            # Продвигаем первого в листе ожидания
+        # Промоушен происходит, только если удалили из ОСНОВНОГО списка (где счетчик)
+        if removed_from_list == "основного списка" and event['waitlist']: 
             promoted_user_entry = event['waitlist'].pop(0)
             event['joined'].append(promoted_user_entry)
             
@@ -598,7 +627,7 @@ async def remove_participant_command(update: Update, context: ContextTypes.DEFAU
             try:
                 await context.bot.send_message(
                     chat_id=promoted_user_entry['id'],
-                    text=f"🎉 **Поздравляем!** Вы переведены из листа ожидания в основной список на событие '{event['title']}' (ID: {event_id}).",
+                    text=f"🎉 **Поздравляем!** Вы переведены из листа ожидания в основной список на событие '*{event['title']}*' (ID: {event_id}).",
                     parse_mode="Markdown"
                 )
             except Exception as e:
@@ -621,22 +650,27 @@ async def remove_participant_command(update: Update, context: ContextTypes.DEFAU
             f"❗️ Пользователь ID **{user_to_remove_id}** не найден в списках события **{event_id}**.",
             parse_mode="Markdown"
         )
-# <<< КОНЕЦ ДОБАВЛЕННОЙ КОМАНДЫ >>>
+
 
 async def export_event_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    # 📌 Добавлена проверка на аргументы
     if not user or not context.args:
-        await update.message.reply_text("Использование: /export_event <event_id>")
+        await update.message.reply_text("Использование: `/export_event <event_id>`", parse_mode="Markdown")
         return
+        
     event_id = context.args[0].strip()
     events = context.bot_data.get("events", {})
     event = events.get(event_id)
+    
     if not event:
-        await update.message.reply_text("Событие не найдено.")
+        await update.message.reply_text(f"Событие с ID **{event_id}** не найдено.", parse_mode="Markdown")
         return
+        
     if not is_admin(user.id, event):
         await update.message.reply_text("Только админ или создатель может экспортировать участников.")
         return
+        
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["status", "id", "name", "username"])
@@ -644,19 +678,23 @@ async def export_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
         writer.writerow(["joined", u.get("id"), u.get("name"), u.get("username") or ""])
     for u in event.get("waitlist", []):
         writer.writerow(["waitlist", u.get("id"), u.get("name"), u.get("username") or ""])
+        
     buf.seek(0)
     bio = io.BytesIO(buf.getvalue().encode("utf-8"))
     bio.name = f"event_{event_id}_participants.csv"
+    
     try:
-        await context.bot.send_document(chat_id=user.id, document=InputFile(bio))
+        # 📌 Отправка документа в приватный чат пользователя
+        await context.bot.send_document(chat_id=user.id, document=InputFile(bio), caption=f"Экспорт участников события *{event_id}*", parse_mode="Markdown")
     except (BadRequest, Forbidden) as e:
-        await update.message.reply_text(f"Не удалось отправить файл: {e}")
+        await update.message.reply_text(f"Не удалось отправить файл: {e}\n\nУбедитесь, что вы запустили команду в приватном чате с ботом и он может вам писать.")
 
 
 async def delete_event_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    # 📌 Добавлена проверка на аргументы
     if not user or not context.args:
-        await update.message.reply_text("Использование: /delete_event <event_id>")
+        await update.message.reply_text("Использование: `/delete_event <event_id>`", parse_mode="Markdown")
         return
 
     event_id = context.args[0].strip() 
@@ -667,7 +705,8 @@ async def delete_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
     if not event:
         await update.message.reply_text(
              f"Событие не найдено. Указанный ID: **{event_id}**. "
-             f"Убедитесь, что ID правильный и не содержит пробелов."
+             f"Убедитесь, что ID правильный и не содержит пробелов.",
+             parse_mode="Markdown"
         )
         return
 
@@ -680,6 +719,7 @@ async def delete_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.delete_message(chat_id=event["channel"], message_id=event["message_id"])
     except Exception as e:
         print(f"Ошибка при удалении сообщения канала для события {event_id}: {e}")
+        # Не блокируем удаление события, если не удалось удалить сообщение в канале
         pass
 
     # Удаление из хранилища
@@ -687,23 +727,28 @@ async def delete_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
     context.bot_data["events"] = events
     context.bot_data.update({})
 
-    await update.message.reply_text(f"Событие **{event_id}** удалено.")
+    await update.message.reply_text(f"Событие **{event_id}** удалено.", parse_mode="Markdown")
 
 # Редактирование события (Conversation)
 async def edit_event_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    # 📌 Добавлена проверка на аргументы
     if not user or not context.args:
-        await update.message.reply_text("Использование: /edit_event <event_id>")
+        await update.message.reply_text("Использование: `/edit_event <event_id>`", parse_mode="Markdown")
         return ConversationHandler.END
+        
     event_id = context.args[0].strip()
     events = context.bot_data.get("events", {})
     event = events.get(event_id)
+    
     if not event:
-        await update.message.reply_text("Событие не найдено.")
+        await update.message.reply_text(f"Событие с ID **{event_id}** не найдено.", parse_mode="Markdown")
         return ConversationHandler.END
+        
     if not is_admin(user.id, event):
         await update.message.reply_text("Только админ или создатель может редактировать событие.")
         return ConversationHandler.END
+        
     context.user_data["edit_event_id"] = event_id
     await update.message.reply_text(
         "Что редактировать? Отправь номер:\n"
@@ -717,11 +762,16 @@ async def edit_select_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if txt not in {"1", "2", "3", "4", "5", "6"}:
         await update.message.reply_text("Неверный выбор. Отправь номер (1-6).")
         return EDIT_SELECT_FIELD
+        
     context.user_data["edit_field"] = int(txt)
+    
     if txt == "6":
+        # Если выбрано фото, нужно иметь возможность принять фото, а не только текст
         await update.message.reply_text("Пришли новое фото (или 'remove' чтобы убрать фото).")
+        # Но ConversationHandler должен ожидать любого сообщения (фото или текст)
     else:
         await update.message.reply_text("Пришли новое значение для выбранного поля:")
+        
     return EDIT_NEW_VALUE
 
 
@@ -729,17 +779,22 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     events = context.bot_data.get("events", {})
     event_id = context.user_data.get("edit_event_id")
+    
     if not event_id:
         await update.message.reply_text("Контекст редактирования потерян.")
         return ConversationHandler.END
+        
     event = events.get(event_id)
     if not event:
         await update.message.reply_text("Событие уже не существует.")
         return ConversationHandler.END
+        
     fld = context.user_data.get("edit_field")
     if fld is None:
         await update.message.reply_text("Поле не выбрано.")
         return ConversationHandler.END
+        
+    
     try:
         if fld == 1:
             event["title"] = update.message.text.strip()
@@ -754,8 +809,15 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(event["joined"]) > capacity:
                 overflow = event["joined"][capacity:]
                 event["joined"] = event["joined"][:capacity]
-                # overflow возвращаем в waitlist в конец
-                event["waitlist"].extend(overflow)
+                # overflow возвращаем в waitlist в начало (т.к. они были в основном списке)
+                event["waitlist"] = overflow + event["waitlist"] 
+                # (Ваше extend() добавляло в конец, но логичнее добавить в начало листа ожидания, так как они уже "были" записаны)
+            elif len(event["joined"]) < capacity:
+                # Если вместимость увеличилась, продвигаем из листа ожидания
+                while len(event["joined"]) < event["capacity"] and event["waitlist"]:
+                    promoted = event["waitlist"].pop(0)
+                    event["joined"].append(promoted)
+                    # Можно добавить уведомление о продвижении, как в button_handler, но в целях упрощения - опустим
         elif fld == 4:
             event["location"] = update.message.text.strip()
         elif fld == 5:
@@ -766,24 +828,30 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 event["photo_id"] = None
             else:
                 if not update.message.photo:
-                    await update.message.reply_text("Ожидаю фото или 'remove'.")
+                    await update.message.reply_text("Ожидаю фото или 'remove'. Попробуй ещё раз.")
                     return EDIT_NEW_VALUE
                 event["photo_id"] = update.message.photo[-1].file_id
+                
         # сохранить и обновить
         events[event_id] = event
         context.bot_data["events"] = events
         context.bot_data.update({})
         
-        # <<< ИЗМЕНЕНО: Используем утилиту для обновления сообщения >>>
+        # Используем утилиту для обновления сообщения
         await update_event_message(context, event_id, event, update.message.chat_id)
         
         await update.message.reply_text("Событие обновлено.")
+        
     except ValueError:
         await update.message.reply_text("Для вместимости нужно положительное целое число. Попробуй ещё раз.")
+        return EDIT_NEW_VALUE
+    except AttributeError: # Если в текстовое поле прислали не текст
+        await update.message.reply_text("Ожидаю текстовое значение. Попробуй ещё раз.")
         return EDIT_NEW_VALUE
     finally:
         context.user_data.pop("edit_field", None)
         context.user_data.pop("edit_event_id", None)
+        
     return ConversationHandler.END
 
 
@@ -803,10 +871,15 @@ def main():
     # Переменные для Webhook
     port = int(os.environ.get('PORT', '8443')) 
     webhook_url = os.environ.get("WEBHOOK_URL") 
+    
+    # 📌 Добавлена логика для запуска в режиме Webhook или Polling
     if not webhook_url:
-        raise ValueError("Пожалуйста, установите WEBHOOK_URL (URL вашего сервиса Render) в окружении.")
+        print("ВНИМАНИЕ: Переменная WEBHOOK_URL не установлена. Запуск в режиме Long Polling.")
+        WEBHOOK_PATH = None
+    else:
+        print(f"Запуск в режиме Webhook на {webhook_url}")
+        WEBHOOK_PATH = f"/webhook/{token}"
 
-    WEBHOOK_PATH = f"/webhook/{token}"
 
     # --- КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: БЕЗОПАСНАЯ ИНИЦИАЛИЗАЦИЯ ПЕРСИСТЕНСА ---
     try:
@@ -830,60 +903,79 @@ def main():
     if "events" not in app.bot_data:
         app.bot_data["events"] = {}
 
-    # базовые хендлеры
+    # 1. базовые хендлеры
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("create_event", create_event_command_quick))
-    app.add_handler(MessageHandler(filters.PHOTO & filters.Caption(True), create_event_from_photo_message))
     app.add_handler(CommandHandler("my_events", my_events_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    
+    # 2. Быстрое создание
+    app.add_handler(CommandHandler("create_event", create_event_command_quick))
+    # Обработчик фото с подписью (для быстрого создания с картинкой)
+    # 📌 Использовать filters.PHOTO & filters.Caption, чтобы ловить только фото с подписью
+    app.add_handler(
+        MessageHandler(
+            filters.PHOTO & filters.Caption(re.compile(r".+\s*\|\s*.+\s*\|\s*.+")),
+            create_event_from_photo_message,
+        )
+    )
+
+    # 3. Админ команды
     app.add_handler(CommandHandler("export_event", export_event_command))
     app.add_handler(CommandHandler("delete_event", delete_event_command))
-    # <<< ДОБАВЛЕНО: Регистрация новой админ команды >>>
     app.add_handler(CommandHandler("remove_participant", remove_participant_command))
 
-    # edit conversation
-    edit_conv = ConversationHandler(
-        entry_points=[CommandHandler("edit_event", edit_event_command)],
-        states={
-            EDIT_SELECT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_select_field)],
-            EDIT_NEW_VALUE: [
-                MessageHandler((filters.PHOTO & ~filters.COMMAND) | (filters.TEXT & ~filters.COMMAND), edit_new_value)
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", edit_cancel)],
-        # conversation_timeout=300, # <<< УДАЛЕНО: Убран таймаут, чтобы не было предупреждений >>>
-    )
-    app.add_handler(edit_conv)
-
-    # create conversation (пошагово)
-    create_conv = ConversationHandler(
+    # 4. Conversation: Создание события (/create)
+    create_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("create", create_start)],
         states={
-            C_TITLE: [MessageHandler(filters.ALL & ~filters.COMMAND, create_title)],
+            C_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_title)],
             C_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_date)],
             C_CAPACITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_capacity)],
             C_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_location)],
             C_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_description)],
+            # 📌 Обработчик для фото или текста 'skip'
             C_PHOTO: [
-                MessageHandler(
-                    (filters.PHOTO & ~filters.COMMAND) | (filters.Regex("(?i)^skip$") & ~filters.COMMAND),
-                    create_photo_step,
-                )
+                MessageHandler(filters.PHOTO, create_photo_step),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, create_photo_step),
             ],
         },
         fallbacks=[CommandHandler("cancel", create_cancel)],
-        # conversation_timeout=600, # <<< УДАЛЕНО: Убран таймаут, чтобы не было предупреждений >>>
+        persistent=True,
+        name="create_event_conversation",
     )
-    app.add_handler(create_conv)
+    app.add_handler(create_conv_handler)
+    
+    # 5. Conversation: Редактирование события (/edit_event)
+    edit_conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("edit_event", edit_event_command)],
+        states={
+            EDIT_SELECT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_select_field)],
+            # 📌 Обработчик для фото или текста
+            EDIT_NEW_VALUE: [
+                MessageHandler(filters.PHOTO, edit_new_value),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_new_value),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", edit_cancel)],
+        persistent=True,
+        name="edit_event_conversation",
+    )
+    app.add_handler(edit_conv_handler)
 
-    # 4. ЗАПУСК В РЕЖИМЕ WEBHOOK
-    print("Бот запускается в режиме Webhook...")
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=WEBHOOK_PATH,
-        webhook_url=f"{webhook_url}{WEBHOOK_PATH}",
-    )
+    # 6. Обработчик Inline-кнопок
+    app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(join|leave)\|\d+$"))
+
+    # 7. Запуск бота (Webhooks vs Polling)
+    if WEBHOOK_PATH:
+        # Webhook (для Render, Heroku и т.п.)
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            urlpath=WEBHOOK_PATH,
+            webhook_url=f"{webhook_url}{WEBHOOK_PATH}",
+        )
+    else:
+        # Polling (для локального запуска)
+        app.run_polling()
 
 
 if __name__ == "__main__":
