@@ -57,12 +57,13 @@ def format_event_message(event: Dict):
 
 
 async def create_event_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Example usage: /create_event Title | 2025-11-02 20:00 | 10 | Cinema Hall | Short description...
     user = update.effective_user
     if not user:
         return
     if not context.args:
-        await update.message.reply_text("Usage:\n/create_event Title | 2025-11-02 20:00 | capacity | location | description")
+        await update.message.reply_text(
+            "Usage:\n/create_event Title | 2025-11-02 20:00 | capacity | location | description"
+        )
         return
 
     raw = " ".join(context.args)
@@ -86,18 +87,22 @@ async def create_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
         "description": description,
         "creator_id": user.id,
         "message_id": None,
-        "channel": os.environ.get("CHANNEL", "@kinovinomoz"),  # change default if needed
+        "channel": os.environ.get("CHANNEL", "@kinovinomoz"),
         "joined": [],
         "waitlist": []
     }
     data["events"][event_id] = event
     save_data(data)
 
-    # Post to channel (bot must be admin!)
     app = context.application
     text = format_event_message(event)
     keyboard = make_event_keyboard(event_id, event)
-    sent = await app.bot.send_message(chat_id=event["channel"], text=text, reply_markup=keyboard, parse_mode="HTML")
+    sent = await app.bot.send_message(
+        chat_id=event["channel"],
+        text=text,
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
 
     event["message_id"] = sent.message_id
     data["events"][event_id] = event
@@ -141,6 +146,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "wait":
         event["waitlist"].append(user_id)
         response = "You were added to the waitlist 🕒"
+
     else:
         response = "Unknown action."
 
@@ -157,11 +163,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-    # Save and update
     data["events"][event_id] = event
     save_data(data)
 
-    # Update message in channel
     try:
         await context.bot.edit_message_text(
             chat_id=event["channel"],
@@ -173,7 +177,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # Notify user
     try:
         await query.from_user.send_message(response)
     except Exception:
@@ -197,15 +200,18 @@ async def my_events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     token = os.environ.get("BOT_TOKEN")
+    if not token:
+        raise ValueError("BOT_TOKEN environment variable not set!")
+
     app = ApplicationBuilder().token(token).build()
 
     app.add_handler(CommandHandler("create_event", create_event_command))
     app.add_handler(CommandHandler("my_events", my_events_command))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    print("Bot started (polling). Press Ctrl-C to stop.")
+    print("✅ Bot started. Waiting for commands...")
     app.run_polling()
 
 
-if __name__ == "__main__":
+if name == "__main__":
     main()
