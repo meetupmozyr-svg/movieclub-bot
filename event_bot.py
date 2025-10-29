@@ -39,7 +39,7 @@ DATA_FILE = "bot_persistence.pickle"
     C_PHOTO,
     EDIT_SELECT_FIELD,
     EDIT_NEW_VALUE,
-) = range(20)
+) = range(8)
 
 # Utility: get admin list from env (comma-separated IDs) or empty
 def get_admin_ids() -> List[int]:
