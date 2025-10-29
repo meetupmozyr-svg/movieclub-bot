@@ -722,7 +722,7 @@ def main():
             # на этапе фото: либо фото, либо текст "skip"
            C_PHOTO: [
                 MessageHandler(
-                    (filters.PHOTO & ~filters.COMMAND) | (filters.Regex("^skip$", flags=re.IGNORECASE) & ~filters.COMMAND),
+                    (filters.PHOTO & ~filters.COMMAND) | (filters.Regex("(?i)^skip$") & ~filters.COMMAND),
                     create_photo_step,
                 )
             ],
