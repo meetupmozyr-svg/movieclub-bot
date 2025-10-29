@@ -4,7 +4,7 @@
 поддержкой фото, управлением событиями, экспортом участников и админ-функциями.
 
 Совместимость: python-telegram-bot v20+
-Запуск: установить BOT_TOKEN и CHANNEL в переменных окружения (Render/Heroku/локально).
+Запуск: установить BOT_TOKEN, CHANNEL, PORT, WEBHOOK_URL в переменных окружения.
 Опции админов: ADMIN_IDS (comma-separated IDs) — необязательно.
 """
 
@@ -44,7 +44,7 @@ DATA_FILE = "bot_persistence.pickle"
     C_PHOTO,
     EDIT_SELECT_FIELD,
     EDIT_NEW_VALUE,
-) = range(8)  # было range(20) — исправлено на ровно 8 состояний
+) = range(8)
 
 # Получить список админов из окружения (OPTIONAL)
 def get_admin_ids() -> List[int]:
@@ -170,7 +170,7 @@ async def create_event_command_quick(update: Update, context: ContextTypes.DEFAU
     location = parts[3] if len(parts) > 3 else ""
     description = parts[4] if len(parts) > 4 else ""
 
-    # *** ИСПРАВЛЕНИЕ 1 (атомарный ID) ***
+    # Атомарный ID
     event_counter = context.bot_data.get("event_counter", 0) + 1
     context.bot_data["event_counter"] = event_counter
     event_id = str(event_counter)
@@ -233,7 +233,7 @@ async def create_event_from_photo_message(update: Update, context: ContextTypes.
     location = parts[3] if len(parts) > 3 else ""
     description = parts[4] if len(parts) > 4 else ""
     
-    # *** ИСПРАВЛЕНИЕ 1 (атомарный ID) ***
+    # Атомарный ID
     event_counter = context.bot_data.get("event_counter", 0) + 1
     context.bot_data["event_counter"] = event_counter
     event_id = str(event_counter)
@@ -322,17 +322,15 @@ async def create_description(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def create_photo_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # *** ИСПРАВЛЕНИЕ 3 (убрана избыточная проверка) ***
     if update.message.text and update.message.text.strip().lower() == "skip":
         photo_id = None
     else:
-        # Если это не 'skip', то MessageHandler гарантирует, что это фото.
         photo_id = update.message.photo[-1].file_id
 
     if "events" not in context.bot_data:
         context.bot_data["events"] = {}
 
-    # *** ИСПРАВЛЕНИЕ 1 (атомарный ID) ***
+    # Атомарный ID
     event_counter = context.bot_data.get("event_counter", 0) + 1
     context.bot_data["event_counter"] = event_counter
     event_id = str(event_counter)
@@ -385,9 +383,6 @@ async def create_photo_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# *** ИСПРАВЛЕНИЕ 2: Удалена неиспользуемая функция create_photo_skip ***
-
-
 async def create_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("new_event", None)
     await update.message.reply_text("Создание события отменено.")
@@ -397,7 +392,7 @@ async def create_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -------------------------- Кнопки (join/leave) ----------------------------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await query.answer() # Ответ сразу, чтобы избежать ошибки "Query is too old"
     try:
         action, event_id = query.data.split("|")
     except (ValueError, AttributeError):
@@ -453,7 +448,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.update({})
 
     # обновляем сообщение в канале (edit_caption для фото, edit_text для текста)
-    try:
+    try: # <-- ИСПРАВЛЕНИЕ: Ловим общий Exception, чтобы не дать боту упасть
         if event.get("photo_id"):
             await context.bot.edit_message_caption(
                 chat_id=event["channel"],
@@ -470,8 +465,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=make_event_keyboard(event_id, event),
                 parse_mode="HTML",
             )
-    except (BadRequest, Forbidden) as e:
+    except Exception as e: # <-- Ловим общий Exception
         print(f"Не удалось отредактировать сообщение события {event_id}: {e}")
+        pass
 
     # отправляем подтверждение пользователю (лично или alert)
     try:
@@ -536,21 +532,16 @@ async def delete_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("Использование: /delete_event <event_id>")
         return
 
-    # Убедимся, что ID - это строка, и уберем возможные лишние пробелы.
-    # event_id у вас в коде сохраняется как СТРОКА (str(event_counter)).
     event_id = context.args[0].strip() 
 
     events = context.bot_data.get("events", {})
     event = events.get(event_id)
 
     if not event:
-        # ДОБАВЛЕНО ДЛЯ ОТЛАДКИ: Сообщаем пользователю, что именно не так
-        if event_id in events.keys():
-             await update.message.reply_text(f"Событие с ID '{event_id}' найдено, но пустое. (Внутренняя ошибка)")
-        else:
-             # Это самое вероятное место, куда попадает бот
-             await update.message.reply_text(f"Событие не найдено. Указанный ID: **{event_id}**. "
-                                             f"Убедитесь, что ID правильный и не содержит пробелов.")
+        await update.message.reply_text(
+             f"Событие не найдено. Указанный ID: **{event_id}**. "
+             f"Убедитесь, что ID правильный и не содержит пробелов."
+        )
         return
 
     if not is_admin(user.id, event):
@@ -562,12 +553,12 @@ async def delete_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.delete_message(chat_id=event["channel"], message_id=event["message_id"])
     except Exception as e:
         print(f"Ошибка при удалении сообщения канала для события {event_id}: {e}")
-        pass # Не страшно, если не удалось удалить в канале
+        pass
 
     # Удаление из хранилища
     events.pop(event_id, None)
     context.bot_data["events"] = events
-    context.bot_data.update({}) # Явно сохраняем персистенс
+    context.bot_data.update({})
 
     await update.message.reply_text(f"Событие **{event_id}** удалено.")
 
@@ -655,7 +646,7 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         events[event_id] = event
         context.bot_data["events"] = events
         context.bot_data.update({})
-        try:
+        try: # <-- ИСПРАВЛЕНИЕ: Ловим общий Exception, чтобы не дать боту упасть
             if event.get("photo_id"):
                 await context.bot.edit_message_caption(
                     chat_id=event["channel"],
@@ -672,8 +663,9 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=make_event_keyboard(event_id, event),
                     parse_mode="HTML",
                 )
-        except Exception as e:
+        except Exception as e: # <-- Ловим общий Exception
             print(f"Не удалось обновить сообщение при редактировании события {event_id}: {e}")
+            pass
         await update.message.reply_text("Событие обновлено.")
     except ValueError:
         await update.message.reply_text("Для вместимости нужно положительное целое число. Попробуй ещё раз.")
@@ -692,32 +684,30 @@ async def edit_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------- Main / Bootstrap -----------------------------
-# ... (Оставьте все импорты и код до функции main() без изменений) ...
-
-# ---------------------------- Main / Bootstrap (ИСПРАВЛЕНИЕ ДЛЯ WEBHOOK) -----------------------------
 def main():
     token = os.environ.get("BOT_TOKEN")
     if not token:
-        # Эта ошибка всегда должна быть устранена
         raise ValueError("Пожалуйста, установите BOT_TOKEN в окружении.")
 
     # Переменные для Webhook
-    # 1. PORT: Порт, который будет слушать ваш бот. Render требует открыть порт.
-    #    Мы берем его из окружения (Renderer задаст его сам) или используем 8443 по умолчанию.
     port = int(os.environ.get('PORT', '8443')) 
-    
-    # 2. WEBHOOK_URL: Полный публичный URL вашего сервиса Render.
-    #    Вам нужно будет установить эту переменную окружения на Render.
     webhook_url = os.environ.get("WEBHOOK_URL") 
     if not webhook_url:
-        # Убедитесь, что WEBHOOK_URL установлен в настройках Render
         raise ValueError("Пожалуйста, установите WEBHOOK_URL (URL вашего сервиса Render) в окружении.")
 
-    # 3. WEBHOOK_PATH: Секретный путь для Telegram, чтобы избежать подбора
-    #    Используем токен бота как часть пути для безопасности.
     WEBHOOK_PATH = f"/webhook/{token}"
 
-    persistence = PicklePersistence(filepath=DATA_FILE)
+    # --- КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: БЕЗОПАСНАЯ ИНИЦИАЛИЗАЦИЯ ПЕРСИСТЕНСА ---
+    try:
+        # Пытаемся загрузить персистенс
+        persistence = PicklePersistence(filepath=DATA_FILE)
+        print("Персистенс загружен успешно.")
+    except Exception as e:
+        # Если загрузка не удалась (файл поврежден или устарел), начинаем с чистых данных
+        print(f"ВНИМАНИЕ: Ошибка загрузки персистенса ({e}). Начинаем с чистых данных.")
+        # on_flush=False предотвращает немедленную запись пустого файла (опционально, но безопасно)
+        persistence = PicklePersistence(filepath=DATA_FILE, on_flush=False)
+    # ----------------------------------------------------------------------
     
     app = (
         ApplicationBuilder()
@@ -729,7 +719,7 @@ def main():
     if "events" not in app.bot_data:
         app.bot_data["events"] = {}
 
-    # базовые хендлеры (ОСТАВЛЕНО БЕЗ ИЗМЕНЕНИЙ)
+    # базовые хендлеры
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("create_event", create_event_command_quick))
     app.add_handler(MessageHandler(filters.PHOTO & filters.Caption(True), create_event_from_photo_message))
@@ -738,7 +728,7 @@ def main():
     app.add_handler(CommandHandler("export_event", export_event_command))
     app.add_handler(CommandHandler("delete_event", delete_event_command))
 
-    # edit conversation (ОСТАВЛЕНО БЕЗ ИЗМЕНЕНИЙ)
+    # edit conversation
     edit_conv = ConversationHandler(
         entry_points=[CommandHandler("edit_event", edit_event_command)],
         states={
@@ -752,7 +742,7 @@ def main():
     )
     app.add_handler(edit_conv)
 
-    # create conversation (пошагово) (ОСТАВЛЕНО БЕЗ ИЗМЕНЕНИЙ)
+    # create conversation (пошагово)
     create_conv = ConversationHandler(
         entry_points=[CommandHandler("create", create_start)],
         states={
@@ -773,7 +763,7 @@ def main():
     )
     app.add_handler(create_conv)
 
-    # 4. ЗАПУСК В РЕЖИМЕ WEBHOOK (вместо app.run_polling())
+    # 4. ЗАПУСК В РЕЖИМЕ WEBHOOK
     print("Бот запускается в режиме Webhook...")
     app.run_webhook(
         listen="0.0.0.0",
