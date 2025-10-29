@@ -59,6 +59,12 @@ async def create_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    # --- ADDED DEFENSIVE CHECK ---
+    # Ensure the 'events' key exists in bot_data before accessing it
+    if 'events' not in context.bot_data:
+        context.bot_data['events'] = {}
+    # -----------------------------
+
     raw = " ".join(context.args)
     parts = [p.strip() for p in raw.split("|")]
     if len(parts) < 3:
@@ -75,7 +81,7 @@ async def create_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
     location = parts[3] if len(parts) > 3 else ""
     description = parts[4] if len(parts) > 4 else ""
 
-    # Get a new event ID.
+    # This line now safely accesses context.bot_data['events']
     event_id = str(max([int(k) for k in context.bot_data['events'].keys()] + [0]) + 1)
 
     event = {
@@ -112,7 +118,7 @@ async def create_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
     event["message_id"] = sent.message_id
     context.bot_data["events"][event_id] = event
     
-    # !!! FIX: Force persistence to save the deep change !!!
+    # Force persistence to save the deep change
     context.bot_data.update({})
 
     await update.message.reply_text(f"Event created and posted to {event['channel']} (ID {event_id}).")
