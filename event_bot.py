@@ -535,25 +535,41 @@ async def delete_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
     if not user or not context.args:
         await update.message.reply_text("Использование: /delete_event <event_id>")
         return
-    event_id = context.args[0].strip()
+
+    # Убедимся, что ID - это строка, и уберем возможные лишние пробелы.
+    # event_id у вас в коде сохраняется как СТРОКА (str(event_counter)).
+    event_id = context.args[0].strip() 
+
     events = context.bot_data.get("events", {})
     event = events.get(event_id)
+
     if not event:
-        await update.message.reply_text("Событие не найдено.")
+        # ДОБАВЛЕНО ДЛЯ ОТЛАДКИ: Сообщаем пользователю, что именно не так
+        if event_id in events.keys():
+             await update.message.reply_text(f"Событие с ID '{event_id}' найдено, но пустое. (Внутренняя ошибка)")
+        else:
+             # Это самое вероятное место, куда попадает бот
+             await update.message.reply_text(f"Событие не найдено. Указанный ID: **{event_id}**. "
+                                             f"Убедитесь, что ID правильный и не содержит пробелов.")
         return
+
     if not is_admin(user.id, event):
         await update.message.reply_text("Только админ или создатель может удалить событие.")
         return
+
     # Попытаться удалить сообщение в канале (если есть права)
     try:
         await context.bot.delete_message(chat_id=event["channel"], message_id=event["message_id"])
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Ошибка при удалении сообщения канала для события {event_id}: {e}")
+        pass # Не страшно, если не удалось удалить в канале
+
+    # Удаление из хранилища
     events.pop(event_id, None)
     context.bot_data["events"] = events
-    context.bot_data.update({})
-    await update.message.reply_text(f"Событие {event_id} удалено.")
+    context.bot_data.update({}) # Явно сохраняем персистенс
 
+    await update.message.reply_text(f"Событие **{event_id}** удалено.")
 
 # Редактирование события (Conversation)
 async def edit_event_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
