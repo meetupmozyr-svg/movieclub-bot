@@ -187,7 +187,7 @@ async def my_events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    token = os.environ.get("BOT_TOKEN", "7993790754:AAFN995a4G0ePjF5NNyyHbIQ1714S8Ljahk")
+    token = os.environ.get("BOT_TOKEN")
     app = ApplicationBuilder().token(token).build()
 
     app.add_handler(CommandHandler("create_event", create_event_command))
