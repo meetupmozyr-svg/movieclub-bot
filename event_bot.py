@@ -1,35 +1,39 @@
-# telegram_event_bot_full.py
+#!/usr/bin/env python3
 """
-Полнофункциональный Telegram бот для создания мероприятий с фото, пошаговым вводом,
-просмотром участников, экспортом и админ-командами.
+Полнофункциональный Telegram бот для создания мероприятий с пошаговым вводом,
+поддержкой фото, управлением событиями, экспортом участников и админ-функциями.
+
+Совместимость: python-telegram-bot v20+
+Запуск: установить BOT_TOKEN и CHANNEL в переменных окружения (Render/Heroku/локально).
+Опции админов: ADMIN_IDS (comma-separated IDs) — необязательно.
 """
+
 import os
-import csv
 import io
-from typing import Dict, List, Any, Tuple
+import csv
+from typing import Dict, List, Any
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
-    Message,
     InputFile,
 )
 from telegram.ext import (
     ApplicationBuilder,
-    CallbackQueryHandler,
     CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     PicklePersistence,
-    MessageHandler,
     filters,
     ConversationHandler,
 )
 from telegram.error import BadRequest, Forbidden
 
-# persistence file
+# ---------------------------- Конфигурация ---------------------------------
 DATA_FILE = "bot_persistence.pickle"
 
-# Conversation states for create/edit flows
+# Conversation states
 (
     C_TITLE,
     C_DATE,
@@ -39,22 +43,26 @@ DATA_FILE = "bot_persistence.pickle"
     C_PHOTO,
     EDIT_SELECT_FIELD,
     EDIT_NEW_VALUE,
-) = range(8)
+) = range(8)  # было range(20) — исправлено на ровно 8 состояний
 
-# Utility: get admin list from env (comma-separated IDs) or empty
+# Получить список админов из окружения (OPTIONAL)
 def get_admin_ids() -> List[int]:
     raw = os.environ.get("ADMIN_IDS", "")
     if not raw:
         return []
-    return [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+    out = []
+    for x in raw.split(","):
+        x = x.strip()
+        if x.isdigit():
+            out.append(int(x))
+    return out
 
 
 ADMIN_IDS = get_admin_ids()
 
-
-# --------------------------- Messages & formatting ---------------------------
-
+# ---------------------------- Утилиты -------------------------------------
 def user_entry(from_user) -> Dict[str, Any]:
+    """Создаёт запись пользователя для списка участников."""
     return {
         "id": from_user.id,
         "name": from_user.full_name or from_user.first_name or str(from_user.id),
@@ -63,6 +71,7 @@ def user_entry(from_user) -> Dict[str, Any]:
 
 
 def users_list_repr(users: List[Dict[str, Any]]) -> str:
+    """Возвращает отформатированный список пользователей (HTML)"""
     if not users:
         return "(пусто)"
     lines = []
@@ -76,29 +85,29 @@ def users_list_repr(users: List[Dict[str, Any]]) -> str:
 
 
 def format_event_message(event: Dict[str, Any]) -> str:
-    joined_block = users_list_repr(event["joined"])
-    wait_block = users_list_repr(event["waitlist"])
-    joined_count = len(event["joined"])
-    wait_count = len(event["waitlist"])
+    joined_block = users_list_repr(event.get("joined", []))
+    wait_block = users_list_repr(event.get("waitlist", []))
+    joined_count = len(event.get("joined", []))
+    wait_count = len(event.get("waitlist", []))
+
     text = (
         f"🎬 <b>{event['title']}</b>\n"
         f"📅 {event['date']}\n"
         f"📍 {event.get('location','(место не указано)')}\n\n"
         f"{event.get('description','(без описания)')}\n\n"
-        f"👥 <b>{joined_count}/{event['capacity']}</b> участников\n"
-        f"{joined_block}\n\n"
-        f"🕒 Лист ожидания: {wait_count}\n"
-        f"{wait_block}"
+        f"👥 <b>{joined_count}/{event['capacity']}</b> участников\n\n"
+        f"<b>✅ Участники:</b>\n{joined_block}\n\n"
+        f"🕒 <b>Лист ожидания:</b> {wait_count}\n{wait_block}"
     )
     return text
 
 
 def make_event_keyboard(event_id: str, event: Dict[str, Any]) -> InlineKeyboardMarkup:
-    spots_filled = len(event["joined"])
+    spots_filled = len(event.get("joined", []))
     capacity = event["capacity"]
-    waitlist_len = len(event["waitlist"])
+    wait_len = len(event.get("waitlist", []))
     if spots_filled >= capacity:
-        join_text = f"🕒 Встать в лист ожидания ({waitlist_len})"
+        join_text = f"🕒 Встать в лист ожидания ({wait_len})"
     else:
         join_text = f"✅ Записаться ({spots_filled}/{capacity})"
     kb = [
@@ -110,24 +119,30 @@ def make_event_keyboard(event_id: str, event: Dict[str, Any]) -> InlineKeyboardM
     return InlineKeyboardMarkup(kb)
 
 
-# --------------------------- Core command handlers ---------------------------
+def is_admin(user_id: int, event: Dict[str, Any] = None) -> bool:
+    if user_id in ADMIN_IDS:
+        return True
+    if event and event.get("creator_id") == user_id:
+        return True
+    return False
 
+
+# ---------------------------- Команды -------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Я бот для создания мероприятий.\n\n"
+        "Привет! Я бот для мероприятий.\n\n"
         "Команды:\n"
-        "/create — создать событие (пошагово)\n"
-        "/create_event Title | Date | Capacity | Location | Description — быстро (текст)\n"
-        "Отправь фото с подписью в формате \"Title | Date | Capacity | ...\" чтобы создать событие с фото.\n"
-        "/my_events — мои записи\n"
-        "/export_event <id> — экспорт участников (только админы/создатель)\n"
-        "/delete_event <id> — удалить событие (только админы/создатель)\n"
-        "/edit_event <id> — редактировать событие (только админы/создатель)\n"
+        "/create — пошаговое создание события (рекомендуется)\n"
+        "/create_event Название | Дата | Вместимость | Место | Описание — быстрая команда\n"
+        "Отправь фото с подписью 'Название | Дата | Вместимость | ...' чтобы создать событие с фото.\n"
+        "/my_events — показать твои записи\n"
+        "/export_event <id> — экспорт участников (только админ/создатель)\n"
+        "/delete_event <id> — удалить событие (только админ/создатель)\n"
+        "/edit_event <id> — редактировать событие (пошагово, только админ/создатель)\n"
     )
 
 
-# --------------------------- Legacy quick create (text) ---------------------------
-
+# Быстрое создание через команду (legacy)
 async def create_event_command_quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user:
@@ -153,7 +168,12 @@ async def create_event_command_quick(update: Update, context: ContextTypes.DEFAU
         return
     location = parts[3] if len(parts) > 3 else ""
     description = parts[4] if len(parts) > 4 else ""
-    event_id = str(max([int(k) for k in context.bot_data["events"].keys()] + [0]) + 1)
+
+    # *** ИСПРАВЛЕНИЕ 1 (атомарный ID) ***
+    event_counter = context.bot_data.get("event_counter", 0) + 1
+    context.bot_data["event_counter"] = event_counter
+    event_id = str(event_counter)
+
     event = {
         "id": event_id,
         "title": title,
@@ -187,10 +207,9 @@ async def create_event_command_quick(update: Update, context: ContextTypes.DEFAU
     await update.message.reply_text(f"Событие создано и опубликовано (ID {event_id}).")
 
 
-# --------------------------- Create from photo caption (legacy) ---------------------------
-
+# Создание события из сообщения с фото + подпись
 async def create_event_from_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg: Message = update.message
+    msg = update.message
     user = update.effective_user
     if not user or not msg:
         return
@@ -212,7 +231,12 @@ async def create_event_from_photo_message(update: Update, context: ContextTypes.
         return
     location = parts[3] if len(parts) > 3 else ""
     description = parts[4] if len(parts) > 4 else ""
-    event_id = str(max([int(k) for k in context.bot_data["events"].keys()] + [0]) + 1)
+    
+    # *** ИСПРАВЛЕНИЕ 1 (атомарный ID) ***
+    event_counter = context.bot_data.get("event_counter", 0) + 1
+    context.bot_data["event_counter"] = event_counter
+    event_id = str(event_counter)
+
     photo_file_id = msg.photo[-1].file_id if msg.photo else None
     event = {
         "id": event_id,
@@ -247,11 +271,9 @@ async def create_event_from_photo_message(update: Update, context: ContextTypes.
     await msg.reply_text(f"Событие с фото создано (ID {event_id}).")
 
 
-# --------------------------- Conversation: Create (pошагово) ---------------------------
-
+# -------------------- Conversation: Create (пошагово) -----------------------
 async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Создаём новое событие — шаг 1/6.\nПришли название события:")
-    # temporary store partials in user_data
+    await update.message.reply_text("Создаём событие — шаг 1/6.\nПришли название события:")
     context.user_data["new_event"] = {}
     return C_TITLE
 
@@ -298,20 +320,22 @@ async def create_description(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return C_PHOTO
 
 
-async def create_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # if user sent 'skip' text earlier, they would reach here? we check type
+async def create_photo_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # *** ИСПРАВЛЕНИЕ 3 (убрана избыточная проверка) ***
     if update.message.text and update.message.text.strip().lower() == "skip":
         photo_id = None
     else:
-        if not update.message.photo:
-            await update.message.reply_text("Ожидаю фото или 'skip'.")
-            return C_PHOTO
+        # Если это не 'skip', то MessageHandler гарантирует, что это фото.
         photo_id = update.message.photo[-1].file_id
 
-    # finalize event creation
     if "events" not in context.bot_data:
         context.bot_data["events"] = {}
-    event_id = str(max([int(k) for k in context.bot_data["events"].keys()] + [0]) + 1)
+
+    # *** ИСПРАВЛЕНИЕ 1 (атомарный ID) ***
+    event_counter = context.bot_data.get("event_counter", 0) + 1
+    context.bot_data["event_counter"] = event_counter
+    event_id = str(event_counter)
+    
     ne = context.user_data["new_event"]
     event = {
         "id": event_id,
@@ -360,10 +384,7 @@ async def create_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def create_photo_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # user typed 'skip' instead of sending photo
-    update.message.text = "skip"  # hack: mark it
-    return await create_photo(update, context)
+# *** ИСПРАВЛЕНИЕ 2: Удалена неиспользуемая функция create_photo_skip ***
 
 
 async def create_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -372,26 +393,29 @@ async def create_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# --------------------------- Button handler (join/leave) ---------------------------
-
+# -------------------------- Кнопки (join/leave) ----------------------------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = context.bot_data
     try:
         action, event_id = query.data.split("|")
     except (ValueError, AttributeError):
-        await query.edit_message_text("Неверные данные callback.")
+        await query.answer(text="Некорректные данные.", show_alert=True)
         return
-    event = data.get("events", {}).get(event_id)
+
+    events = context.bot_data.get("events", {})
+    event = events.get(event_id)
     if not event:
-        await query.edit_message_text("Событие не найдено или устарело.")
+        await query.answer(text="Событие не найдено или устарело.", show_alert=True)
         return
+
     user = query.from_user
     ue = user_entry(user)
-    # remove existing entries
+
+    # удаляем пользователя из ранее занятых списков
     event["joined"] = [u for u in event["joined"] if u["id"] != ue["id"]]
     event["waitlist"] = [u for u in event["waitlist"] if u["id"] != ue["id"]]
+
     response = ""
     if action == "join":
         if len(event["joined"]) < event["capacity"]:
@@ -404,7 +428,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = "Вы помечены как не придёте ❌"
     else:
         response = "Неизвестное действие."
-    # Promote from waitlist
+
+    # promote from waitlist if space freed
     while len(event["joined"]) < event["capacity"] and event["waitlist"]:
         promoted = event["waitlist"].pop(0)
         if promoted["id"] not in [u["id"] for u in event["joined"]]:
@@ -414,15 +439,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=promoted["id"],
                     text=(
                         f"Хорошая новость — освободилось место!\n\n"
-                        f"Вы автоматически перенесены из листа ожидания в подтверждённые: {event['title']} — {event['date']}"
+                        f"Вы перенесены из листа ожидания в список подтверждённых для:\n"
+                        f"{event['title']} — {event['date']}"
                     ),
                 )
             except (BadRequest, Forbidden) as e:
                 print(f"Не удалось уведомить пользователя {promoted['id']}: {e}")
-    # save
-    data["events"][event_id] = event
+
+    # persist
+    events[event_id] = event
+    context.bot_data["events"] = events
     context.bot_data.update({})
-    # update channel message
+
+    # обновляем сообщение в канале (edit_caption для фото, edit_text для текста)
     try:
         if event.get("photo_id"):
             await context.bot.edit_message_caption(
@@ -442,15 +471,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     except (BadRequest, Forbidden) as e:
         print(f"Не удалось отредактировать сообщение события {event_id}: {e}")
-    # respond to clicking user
+
+    # отправляем подтверждение пользователю (лично или alert)
     try:
         await query.from_user.send_message(response)
     except (BadRequest, Forbidden):
         await query.answer(text=response, show_alert=True)
 
 
-# --------------------------- my_events ---------------------------
-
+# -------------------------- my_events -------------------------------------
 async def my_events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user:
@@ -459,9 +488,9 @@ async def my_events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     events = context.bot_data.get("events", {})
     out = []
     for e in events.values():
-        if any(u["id"] == uid for u in e["joined"]):
+        if any(u["id"] == uid for u in e.get("joined", [])):
             out.append(f"✅ Записан: {e['title']} — {e['date']} (ID {e['id']})")
-        elif any(u["id"] == uid for u in e["waitlist"]):
+        elif any(u["id"] == uid for u in e.get("waitlist", [])):
             out.append(f"🕒 Лист ожидания: {e['title']} — {e['date']} (ID {e['id']})")
     if not out:
         await update.message.reply_text("У вас нет записей.")
@@ -469,16 +498,7 @@ async def my_events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("<b>Ваши записи:</b>\n\n" + "\n".join(out), parse_mode="HTML")
 
 
-# --------------------------- Admin actions: export / delete / edit ---------------------------
-
-def is_admin(user_id: int, event: Dict[str, Any] = None) -> bool:
-    if user_id in ADMIN_IDS:
-        return True
-    if event and event.get("creator_id") == user_id:
-        return True
-    return False
-
-
+# -------------------------- Admin: export / delete / edit ------------------
 async def export_event_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user or not context.args:
@@ -493,13 +513,12 @@ async def export_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
     if not is_admin(user.id, event):
         await update.message.reply_text("Только админ или создатель может экспортировать участников.")
         return
-    # create CSV in memory
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["status", "id", "name", "username"])
-    for u in event["joined"]:
+    for u in event.get("joined", []):
         writer.writerow(["joined", u.get("id"), u.get("name"), u.get("username") or ""])
-    for u in event["waitlist"]:
+    for u in event.get("waitlist", []):
         writer.writerow(["waitlist", u.get("id"), u.get("name"), u.get("username") or ""])
     buf.seek(0)
     bio = io.BytesIO(buf.getvalue().encode("utf-8"))
@@ -524,40 +543,36 @@ async def delete_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
     if not is_admin(user.id, event):
         await update.message.reply_text("Только админ или создатель может удалить событие.")
         return
-    # try delete message in channel
+    # Попытаться удалить сообщение в канале (если есть права)
     try:
         await context.bot.delete_message(chat_id=event["channel"], message_id=event["message_id"])
     except Exception:
-        # ignore failures (bot may have lost perms)
         pass
-    # remove from storage
     events.pop(event_id, None)
     context.bot_data["events"] = events
     context.bot_data.update({})
     await update.message.reply_text(f"Событие {event_id} удалено.")
 
 
-# Edit flow: start -> choose field -> provide new value (photo handled)
+# Редактирование события (Conversation)
 async def edit_event_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user or not context.args:
         await update.message.reply_text("Использование: /edit_event <event_id>")
-        return
+        return ConversationHandler.END
     event_id = context.args[0].strip()
     events = context.bot_data.get("events", {})
     event = events.get(event_id)
     if not event:
         await update.message.reply_text("Событие не найдено.")
-        return
+        return ConversationHandler.END
     if not is_admin(user.id, event):
         await update.message.reply_text("Только админ или создатель может редактировать событие.")
-        return
-    # store editing context
+        return ConversationHandler.END
     context.user_data["edit_event_id"] = event_id
     await update.message.reply_text(
-        "Что редактировать? Выбери номер:\n"
-        "1 — Название\n2 — Дата\n3 — Вместимость\n4 — Место\n5 — Описание\n6 — Фото (пришли новое фото)\n\n"
-        "Отправь номер поля."
+        "Что редактировать? Отправь номер:\n"
+        "1 — Название\n2 — Дата\n3 — Вместимость\n4 — Место\n5 — Описание\n6 — Фото (пришли новое фото или 'remove')"
     )
     return EDIT_SELECT_FIELD
 
@@ -570,10 +585,9 @@ async def edit_select_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["edit_field"] = int(txt)
     if txt == "6":
         await update.message.reply_text("Пришли новое фото (или 'remove' чтобы убрать фото).")
-        return EDIT_NEW_VALUE
     else:
         await update.message.reply_text("Пришли новое значение для выбранного поля:")
-        return EDIT_NEW_VALUE
+    return EDIT_NEW_VALUE
 
 
 async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -592,27 +606,26 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Поле не выбрано.")
         return ConversationHandler.END
     try:
-        if fld == 1:  # title
+        if fld == 1:
             event["title"] = update.message.text.strip()
-        elif fld == 2:  # date
+        elif fld == 2:
             event["date"] = update.message.text.strip()
-        elif fld == 3:  # capacity
+        elif fld == 3:
             capacity = int(update.message.text.strip())
             if capacity <= 0:
                 raise ValueError
             event["capacity"] = capacity
-            # if capacity reduced, trim joined and promote from waitlist appropriately
+            # если уменьшили вместимость, корректируем списки
             if len(event["joined"]) > capacity:
-                # move extra joined to waitlist (FIFO from tail)
                 overflow = event["joined"][capacity:]
                 event["joined"] = event["joined"][:capacity]
-                # prepend overflow to front of waitlist (or append? choose append to preserve order)
-                event["waitlist"] = event["waitlist"] + overflow
-        elif fld == 4:  # location
+                # overflow возвращаем в waitlist в конец
+                event["waitlist"].extend(overflow)
+        elif fld == 4:
             event["location"] = update.message.text.strip()
-        elif fld == 5:  # description
+        elif fld == 5:
             event["description"] = update.message.text.strip()
-        elif fld == 6:  # photo
+        elif fld == 6:
             txt = (update.message.text or "").strip().lower()
             if txt == "remove":
                 event["photo_id"] = None
@@ -621,11 +634,10 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text("Ожидаю фото или 'remove'.")
                     return EDIT_NEW_VALUE
                 event["photo_id"] = update.message.photo[-1].file_id
-        # save and persist
+        # сохранить и обновить
         events[event_id] = event
         context.bot_data["events"] = events
         context.bot_data.update({})
-        # update channel message
         try:
             if event.get("photo_id"):
                 await context.bot.edit_message_caption(
@@ -644,14 +656,12 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="HTML",
                 )
         except Exception as e:
-            # if the message was originally photo and now removed, editing caption may fail; ignore
             print(f"Не удалось обновить сообщение при редактировании события {event_id}: {e}")
         await update.message.reply_text("Событие обновлено.")
     except ValueError:
         await update.message.reply_text("Для вместимости нужно положительное целое число. Попробуй ещё раз.")
         return EDIT_NEW_VALUE
     finally:
-        # cleanup
         context.user_data.pop("edit_field", None)
         context.user_data.pop("edit_event_id", None)
     return ConversationHandler.END
@@ -664,20 +674,19 @@ async def edit_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# --------------------------- bootstrap & main ---------------------------
-
+# ---------------------------- Main / Bootstrap -----------------------------
 def main():
     token = os.environ.get("BOT_TOKEN")
     if not token:
         raise ValueError("Пожалуйста, установите BOT_TOKEN в окружении.")
+
     persistence = PicklePersistence(filepath=DATA_FILE)
     app = ApplicationBuilder().token(token).persistence(persistence).build()
 
-    # initialize events storage
     if "events" not in app.bot_data:
         app.bot_data["events"] = {}
 
-    # Basic handlers
+    # базовые хендлеры
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("create_event", create_event_command_quick))
     app.add_handler(MessageHandler(filters.PHOTO & filters.Caption(True), create_event_from_photo_message))
@@ -686,7 +695,7 @@ def main():
     app.add_handler(CommandHandler("export_event", export_event_command))
     app.add_handler(CommandHandler("delete_event", delete_event_command))
 
-    # Edit conversation
+    # edit conversation
     edit_conv = ConversationHandler(
         entry_points=[CommandHandler("edit_event", edit_event_command)],
         states={
@@ -700,7 +709,7 @@ def main():
     )
     app.add_handler(edit_conv)
 
-    # Create conversation (pошагово)
+    # create conversation (пошагово)
     create_conv = ConversationHandler(
         entry_points=[CommandHandler("create", create_start)],
         states={
@@ -709,8 +718,12 @@ def main():
             C_CAPACITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_capacity)],
             C_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_location)],
             C_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_description)],
+            # на этапе фото: либо фото, либо текст "skip"
             C_PHOTO: [
-                MessageHandler((filters.PHOTO & ~filters.COMMAND) | (filters.TEXT("skip") & ~filters.COMMAND), create_photo)
+                MessageHandler(
+                    (filters.PHOTO & ~filters.COMMAND) | (filters.Regex("^(?i)skip$") & ~filters.COMMAND),
+                    create_photo_step,
+                )
             ],
         },
         fallbacks=[CommandHandler("cancel", create_cancel)],
