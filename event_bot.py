@@ -824,15 +824,15 @@ def main():
     if "events" not in app.bot_data:
         app.bot_data["events"] = {}
 
-    # базовые хендлеры
+    # 1. Базовые хендлеры (команды)
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("create_event", create_event_command_quick))
     app.add_handler(CommandHandler("my_events", my_events_command))
     app.add_handler(CommandHandler("export_event", export_event_command))
     app.add_handler(CommandHandler("delete_event", delete_event_command))
-    app.add_handler(CommandHandler("remove_participant", remove_participant_command)) # Новый админ-хендлер
-    
-    # Хендлер для создания события с фото (с подписью)
+    app.add_handler(CommandHandler("remove_participant", remove_participant_command))
+
+    # 2. Хендлер для создания события с фото (с подписью)
     app.add_handler(
         MessageHandler(
             filters.PHOTO & filters.CAPTION,
@@ -840,10 +840,10 @@ def main():
         )
     )
 
-    # Хендлер для кнопок
+    # 3. Хендлер для кнопок (join/leave)
     app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(join|leave)\|\d+$"))
 
-    # Хендлер для пошагового создания
+    # 4. Хендлер для пошагового создания (ConversationHandler)
     create_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("create", create_start)],
         states={
@@ -854,7 +854,7 @@ def main():
             C_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_description)],
             C_PHOTO: [
                 MessageHandler(filters.PHOTO & ~filters.COMMAND, create_photo_step),
-                MessageHandler(filters.Regex("^skip$"), create_photo_step),
+                MessageHandler(filters.Regex("^skip$", flags=re.IGNORECASE), create_photo_step),
             ],
         },
         fallbacks=[CommandHandler("cancel", create_cancel)],
@@ -863,7 +863,7 @@ def main():
     )
     app.add_handler(create_conv_handler)
     
-    # Хендлер для редактирования
+    # 5. Хендлер для редактирования (ConversationHandler)
     edit_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("edit_event", edit_event_command)],
         states={
