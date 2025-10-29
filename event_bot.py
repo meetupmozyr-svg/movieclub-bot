@@ -5,7 +5,8 @@
 
 Совместимость: python-telegram-bot v20+
 Запуск: установить BOT_TOKEN, CHANNEL, PORT, WEBHOOK_URL в переменных окружения.
-Опции админов: ADMIN_IDS (comma-separated IDs) — необязательно.
+Опции админов: ADMIN_IDS (comma-separated IDs, e.g., 123456789,987654321) — необязательно.
+ВАЖНО: ID в ADMIN_IDS должны быть указаны как ЧИСЛА, без кавычек и других символов.
 """
 
 import os
@@ -379,10 +380,16 @@ async def create_description(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def create_photo_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Логика для определения, пропустить ли фото или использовать его
     if update.message.text and update.message.text.strip().lower() == "skip":
         photo_id = None
-    else:
+    elif update.message.photo:
         photo_id = update.message.photo[-1].file_id
+    else:
+        # Если пришло что-то другое, кроме фото или skip
+        await update.message.reply_text("Ожидаю фото, текст 'skip' или команду /cancel.")
+        return C_PHOTO
+
 
     if "events" not in context.bot_data:
         context.bot_data["events"] = {}
@@ -853,8 +860,12 @@ def main():
             C_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_location)],
             C_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_description)],
             C_PHOTO: [
+                # Обработка фото
                 MessageHandler(filters.PHOTO & ~filters.COMMAND, create_photo_step),
-                MessageHandler(filters.Regex(re.compile("^skip$", re.IGNORECASE)), create_photo_step), # <-- ИСПРАВЛЕНО
+                # Обработка текста 'skip' (с помощью re.compile для игнорирования регистра)
+                MessageHandler(filters.Regex(re.compile("^skip$", re.IGNORECASE)), create_photo_step), 
+                # Обработка любого другого текста (чтобы избежать пропуска шага)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, create_photo_step),
             ],
         },
         fallbacks=[CommandHandler("cancel", create_cancel)],
@@ -869,6 +880,7 @@ def main():
         states={
             EDIT_SELECT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_select_field)],
             EDIT_NEW_VALUE: [
+                # Обрабатываем текст ('remove', новое значение) или фото
                 MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, edit_new_value),
             ],
         },
