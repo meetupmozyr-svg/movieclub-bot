@@ -1,0 +1,8 @@
+# Файл данных Telegram-бота
+bot_persistence.pickle
+
+# Файлы Python (кэш и виртуальное окружение)
+__pycache__/
+*.pyc
+.venv/
+venv/
