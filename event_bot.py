@@ -16,10 +16,11 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     ContextTypes,
-    PicklePersistence,
+    # PicklePersistence, # Заменено на MongoPersistence
     filters,
     ConversationHandler,
 )
+from mongopersistence import MongoPersistence # <-- НОВЫЙ ИМПОРТ
 from telegram.error import BadRequest, Forbidden
 
 # ---------------------------- Логирование ---------------------------------
@@ -31,7 +32,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ---------------------------- Конфигурация ---------------------------------
-DATA_FILE = "bot_persistence.pickle"
+# DATA_FILE = "bot_persistence.pickle" # Удалено
 
 (
     C_TITLE,
@@ -916,15 +917,31 @@ def main():
     webhook_url = os.environ.get("WEBHOOK_URL") 
     if not webhook_url:
         raise ValueError("Пожалуйста, установите WEBHOOK_URL (URL вашего сервиса Render) в окружении.")
-
+        
+    # --- НАСТРОЙКА MONGODB PERSISTENCE ---
+    mongo_url = os.environ.get("MONGO_URL")
+    if not mongo_url:
+        raise ValueError("Пожалуйста, установите MONGO_URL для подключения к MongoDB Atlas.")
+    
     WEBHOOK_PATH = f"/webhook/{token}"
 
     try:
-        persistence = PicklePersistence(filepath=DATA_FILE)
-        logger.info("Персистенс загружен успешно.")
+        # Используем MongoPersistence вместо PicklePersistence
+        # 'eventbotdb' — это имя базы данных, которое будет создано в MongoDB
+        persistence = MongoPersistence(
+            mongo_url=mongo_url,
+            db_name="eventbotdb", 
+            name_col_user_data="user_data",
+            name_col_chat_data="chat_data",
+            name_col_bot_data="bot_data",
+            load_on_flush=False, # Рекомендуется для вебхуков, чтобы данные загружались при каждом запросе
+        )
+        logger.info("MongoDB персистенс загружен успешно.")
     except Exception as e:
-        logger.warning(f"ВНИМАНИЕ: Ошибка загрузки персистенса ({e}). Начинаем с чистых данных.")
-        persistence = PicklePersistence(filepath=DATA_FILE, on_flush=False)
+        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось подключиться к MongoDB: {e}")
+        # Вызываем ошибку, чтобы бот не запускался без базы данных
+        raise e
+    # -------------------------------------
     
     app = (
         ApplicationBuilder()
