@@ -12,6 +12,7 @@ import os
 import io
 import csv
 import re
+import logging
 from typing import Dict, List, Any
 from telegram import (
     InlineKeyboardButton,
@@ -30,6 +31,16 @@ from telegram.ext import (
     ConversationHandler,
 )
 from telegram.error import BadRequest, Forbidden
+
+# ---------------------------- Логирование ---------------------------------
+# Включаем логирование, чтобы видеть ошибки
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+# Устанавливаем более высокий уровень логирования для httpx, чтобы избежать спама
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------- Конфигурация ---------------------------------
 DATA_FILE = "bot_persistence.pickle"
@@ -64,7 +75,6 @@ ADMIN_IDS = get_admin_ids()
 # ---------------------------- Утилиты -------------------------------------
 def user_entry(from_user) -> Dict[str, Any]:
     """Создаёт запись пользователя для списка участников."""
-    # <<< ИЗМЕНЕНО: Добавляем user_id в имя, чтобы избежать конфликтов при отсутствии username >>>
     name = from_user.full_name or from_user.first_name or str(from_user.id)
     return {
         "id": from_user.id,
@@ -128,7 +138,7 @@ def is_admin(user_id: int, event: Dict[str, Any] = None) -> bool:
         return True
     return False
 
-# <<< ДОБАВЛЕНО: Утилита для обновления сообщения в канале (чтобы не дублировать код) >>>
+# <<< ИЗМЕНЕНО: Утилита для обновления сообщения в канале (с обработкой ошибок) >>>
 async def update_event_message(context: ContextTypes.DEFAULT_TYPE, event_id: str, event: Dict[str, Any], chat_id_for_reply: int):
     try:
         if event.get("photo_id"):
@@ -148,9 +158,18 @@ async def update_event_message(context: ContextTypes.DEFAULT_TYPE, event_id: str
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )
+    except BadRequest as e:
+        # 🌟 ИСПРАВЛЕНИЕ: Игнорируем ошибку "Message is not modified", чтобы не спамить в логи
+        if "Message is not modified" in str(e):
+            pass
+        else:
+            logger.error(f"Не удалось отредактировать сообщение события {event_id} (BadRequest): {e}")
+            # (Опционально: можно уведомить админа о *другой* ошибке, если нужно)
+    except Forbidden:
+        logger.error(f"Не удалось отредактировать сообщение {event_id}. У бота нет прав в канале {event['channel']}.")
     except Exception as e:
-        print(f"Не удалось отредактировать сообщение события {event_id} в канале: {e}")
-        # Это не должно мешать основному флоу, но может уведомить админа, если чат_id_for_reply известен
+        logger.error(f"Не удалось отредактировать сообщение события {event_id} в канале: {e}")
+        # Логика уведомления админа из вашего кода (она хорошая)
         if chat_id_for_reply != event["channel"]:
             try:
                 await context.bot.send_message(
@@ -174,7 +193,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/export_event <id> — экспорт участников (только админ/создатель)\n"
         "/delete_event <id> — удалить событие (только админ/создатель)\n"
         "/edit_event <id> — редактировать событие (пошагово, только админ/создатель)\n"
-        "/remove_participant <id> <user_id> — удалить участника (только админ)\n" # <<< ИЗМЕНЕНО: Добавлена новая команда >>>
+        "/remove_participant <id> <user_id> — удалить участника (только админ)\n"
     )
 
 
@@ -184,11 +203,9 @@ async def create_event_command_quick(update: Update, context: ContextTypes.DEFAU
     if not user:
         return
         
-    # <<< ИЗМЕНЕНО: Проверка администратора >>>
     if not is_admin(user.id):
         await update.message.reply_text("⛔️ У вас нет прав для быстрого создания событий.")
         return
-    # =======================================
     
     if not context.args:
         await update.message.reply_text(
@@ -257,11 +274,9 @@ async def create_event_from_photo_message(update: Update, context: ContextTypes.
     if not user or not msg:
         return
         
-    # <<< ИЗМЕНЕНО: Проверка администратора >>>
     if not is_admin(user.id):
         await msg.reply_text("⛔️ У вас нет прав для создания событий с фото.")
         return
-    # =======================================
         
     caption = msg.caption or ""
     parts = [p.strip() for p in caption.split("|")]
@@ -325,11 +340,9 @@ async def create_event_from_photo_message(update: Update, context: ContextTypes.
 async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    # <<< ИЗМЕНЕНО: Проверка администратора >>>
     if not is_admin(user.id):
         await update.message.reply_text("⛔️ У вас нет прав для пошагового создания событий.")
         return ConversationHandler.END
-    # =======================================
     
     await update.message.reply_text("Создаём событие — шаг 1/6.\nПришли название события:")
     context.user_data["new_event"] = {}
@@ -379,11 +392,20 @@ async def create_description(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def create_photo_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text and update.message.text.strip().lower() == "skip":
-        photo_id = None
-    else:
+    photo_id = None
+    
+    # 🌟 ИСПРАВЛЕНИЕ: Корректная обработка фото, 'skip' или неверного ввода
+    if update.message.photo:
         photo_id = update.message.photo[-1].file_id
-
+    elif update.message.text and update.message.text.strip().lower() == "skip":
+        photo_id = None # Пропустить
+    else:
+        # Пользователь прислал текст, который не 'skip', или стикер, или что-то еще
+        await update.message.reply_text(
+            "Неверный ввод. Пожалуйста, пришли фото или напиши 'skip', чтобы пропустить."
+        )
+        return C_PHOTO # Остаемся на этом шаге
+        
     if "events" not in context.bot_data:
         context.bot_data["events"] = {}
 
@@ -449,69 +471,107 @@ async def create_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -------------------------- Кнопки (join/leave) ----------------------------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer() # Ответ сразу, чтобы избежать ошибки "Query is too old"
+    
+    try:
+        # 🌟 ИСПРАВЛЕНИЕ: Ответ сразу, с обработкой ошибки (если query_id уже невалиден)
+        await query.answer() 
+    except BadRequest as e:
+        # Это предотвратит крах бота, если query "устарел" или невалиден (напр. двойное нажатие)
+        if "Query is too old" in str(e) or "query id is invalid" in str(e):
+            logger.warning(f"Failed to answer query (old or invalid): {e}")
+            return # Просто выходим, не можем продолжить
+        else:
+            raise e # Перебросить другие, неожиданные ошибки BadRequest
+
     try:
         action, event_id = query.data.split("|")
     except (ValueError, AttributeError):
-        await query.answer(text="Некорректные данные.", show_alert=True)
+        logger.warning(f"Invalid callback_data received: {query.data}")
         return
 
     events = context.bot_data.get("events", {})
     event = events.get(event_id)
     if not event:
-        await query.answer(text="Событие не найдено или устарело.", show_alert=True)
+        # Не используем query.answer(), так как уже ответили
+        try:
+            await query.from_user.send_message("Ошибка: Событие не найдено или устарело.")
+        except Exception:
+            pass
         return
 
     user = query.from_user
     ue = user_entry(user)
+    
+    # Флаг, чтобы отслеживать, изменилось ли состояние (для update_event_message)
+    state_changed = False
 
     # удаляем пользователя из ранее занятых списков
+    original_joined_count = len(event["joined"])
+    original_waitlist_count = len(event["waitlist"])
+    
     event["joined"] = [u for u in event["joined"] if u["id"] != ue["id"]]
     event["waitlist"] = [u for u in event["waitlist"] if u["id"] != ue["id"]]
+    
+    if len(event["joined"]) < original_joined_count or len(event["waitlist"]) < original_waitlist_count:
+        state_changed = True
 
     response = ""
     if action == "join":
         if len(event["joined"]) < event["capacity"]:
             event["joined"].append(ue)
             response = "Вы успешно записаны ✅"
+            state_changed = True
         else:
-            event["waitlist"].append(ue)
+            # Проверяем, не в листе ожидания ли он уже
+            if not any(u["id"] == ue["id"] for u in event["waitlist"]):
+                 event["waitlist"].append(ue)
+                 state_changed = True
             response = "Событие полное — вы добавлены в лист ожидания 🕒"
+            
     elif action == "leave":
         response = "Вы помечены как не придёте ❌"
+        # state_changed уже True, если он был удален из списков
     else:
         response = "Неизвестное действие."
 
     # promote from waitlist if space freed
+    promoted_users = []
     while len(event["joined"]) < event["capacity"] and event["waitlist"]:
         promoted = event["waitlist"].pop(0)
         if promoted["id"] not in [u["id"] for u in event["joined"]]:
             event["joined"].append(promoted)
-            try:
-                await context.bot.send_message(
-                    chat_id=promoted["id"],
-                    text=(
-                        f"Хорошая новость — освободилось место!\n\n"
-                        f"Вы перенесены из листа ожидания в список подтверждённых для:\n"
-                        f"{event['title']} — {event['date']}"
-                    ),
-                )
-            except (BadRequest, Forbidden) as e:
-                print(f"Не удалось уведомить пользователя {promoted['id']}: {e}")
+            promoted_users.append(promoted)
+            state_changed = True
+
+    # Уведомляем продвинутых пользователей
+    for promoted in promoted_users:
+        try:
+            await context.bot.send_message(
+                chat_id=promoted["id"],
+                text=(
+                    f"Хорошая новость — освободилось место!\n\n"
+                    f"Вы перенесены из листа ожидания в список подтверждённых для:\n"
+                    f"{event['title']} — {event['date']}"
+                ),
+            )
+        except (BadRequest, Forbidden) as e:
+            logger.warning(f"Не удалось уведомить пользователя {promoted['id']} о продвижении: {e}")
 
     # persist
-    events[event_id] = event
-    context.bot_data["events"] = events
-    context.bot_data.update({})
+    if state_changed:
+        events[event_id] = event
+        context.bot_data["events"] = events
+        context.bot_data.update({})
+        
+        # обновляем сообщение в канале (только если были изменения)
+        await update_event_message(context, event_id, event, query.from_user.id) 
 
-    # обновляем сообщение в канале (edit_caption для фото, edit_text для текста)
-    await update_event_message(context, event_id, event, query.from_user.id) # <<< ИЗМЕНЕНО: Используем утилиту >>>
-
-    # отправляем подтверждение пользователю (лично или alert)
+    # отправляем подтверждение пользователю (лично)
     try:
         await query.from_user.send_message(response)
     except (BadRequest, Forbidden):
-        await query.answer(text=response, show_alert=True)
+        # Если ЛС закрыт, мы уже сделали query.answer(), так что все в порядке
+        pass
 
 
 # -------------------------- my_events -------------------------------------
@@ -534,7 +594,6 @@ async def my_events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # -------------------------- Admin: export / delete / edit / remove_participant ------------------
-# <<< ДОБАВЛЕНО: НОВАЯ АДМИН КОМАНДА ДЛЯ УДАЛЕНИЯ УЧАСТНИКА >>>
 async def remove_participant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user:
@@ -570,14 +629,12 @@ async def remove_participant_command(update: Update, context: ContextTypes.DEFAU
     user_removed = False
     removed_from_list = None
     
-    # Ищем в основном списке
     original_joined_count = len(event.get('joined', []))
     event['joined'] = [u for u in event.get('joined', []) if u['id'] != user_to_remove_id]
     if len(event['joined']) < original_joined_count:
         user_removed = True
         removed_from_list = "основного списка"
     
-    # Ищем в листе ожидания
     original_waitlist_count = len(event.get('waitlist', []))
     event['waitlist'] = [u for u in event.get('waitlist', []) if u['id'] != user_to_remove_id]
     if len(event['waitlist']) < original_waitlist_count and not user_removed:
@@ -588,13 +645,10 @@ async def remove_participant_command(update: Update, context: ContextTypes.DEFAU
         # 3. АВТОМАТИЧЕСКОЕ ПРОДВИЖЕНИЕ (если освободилось место)
         promoted_user_entry = None
         
-        # Проверяем, если место освободилось И есть лист ожидания
         if (len(event['joined']) < event['capacity']) and event['waitlist']:
-            # Продвигаем первого в листе ожидания
             promoted_user_entry = event['waitlist'].pop(0)
             event['joined'].append(promoted_user_entry)
             
-            # Отправляем уведомление продвинутому пользователю
             try:
                 await context.bot.send_message(
                     chat_id=promoted_user_entry['id'],
@@ -602,7 +656,7 @@ async def remove_participant_command(update: Update, context: ContextTypes.DEFAU
                     parse_mode="Markdown"
                 )
             except Exception as e:
-                print(f"Не удалось уведомить пользователя {promoted_user_entry['id']} о продвижении: {e}")
+                logger.warning(f"Не удалось уведомить пользователя {promoted_user_entry['id']} о продвижении: {e}")
 
         # 4. ОБНОВЛЕНИЕ СООБЩЕНИЯ В КАНАЛЕ
         context.bot_data["events"][event_id] = event
@@ -621,7 +675,6 @@ async def remove_participant_command(update: Update, context: ContextTypes.DEFAU
             f"❗️ Пользователь ID **{user_to_remove_id}** не найден в списках события **{event_id}**.",
             parse_mode="Markdown"
         )
-# <<< КОНЕЦ ДОБАВЛЕННОЙ КОМАНДЫ >>>
 
 async def export_event_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -679,7 +732,7 @@ async def delete_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         await context.bot.delete_message(chat_id=event["channel"], message_id=event["message_id"])
     except Exception as e:
-        print(f"Ошибка при удалении сообщения канала для события {event_id}: {e}")
+        logger.warning(f"Ошибка при удалении сообщения канала для события {event_id}: {e}")
         pass
 
     # Удаление из хранилища
@@ -754,7 +807,6 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(event["joined"]) > capacity:
                 overflow = event["joined"][capacity:]
                 event["joined"] = event["joined"][:capacity]
-                # overflow возвращаем в waitlist в конец
                 event["waitlist"].extend(overflow)
         elif fld == 4:
             event["location"] = update.message.text.strip()
@@ -769,12 +821,12 @@ async def edit_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text("Ожидаю фото или 'remove'.")
                     return EDIT_NEW_VALUE
                 event["photo_id"] = update.message.photo[-1].file_id
+        
         # сохранить и обновить
         events[event_id] = event
         context.bot_data["events"] = events
         context.bot_data.update({})
         
-        # <<< ИЗМЕНЕНО: Используем утилиту для обновления сообщения >>>
         await update_event_message(context, event_id, event, update.message.chat_id)
         
         await update.message.reply_text("Событие обновлено.")
@@ -793,8 +845,21 @@ async def edit_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Редактирование отменено.")
     return ConversationHandler.END
 
-
 # ---------------------------- Main / Bootstrap -----------------------------
+
+# 🌟 ИСПРАВЛЕНИЕ: Глобальный обработчик ошибок (ОЧЕНЬ ВАЖНО)
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Логирует ошибки, вызванные Update, и предотвращает крах бота."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
+    
+    # Можно также попытаться уведомить пользователя, если это возможно
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text("Произошла внутренняя ошибка. Мы уже разбираемся.")
+        except Exception as e:
+            logger.error(f"Не удалось отправить сообщение об ошибке пользователю: {e}")
+
+
 def main():
     token = os.environ.get("BOT_TOKEN")
     if not token:
@@ -808,17 +873,13 @@ def main():
 
     WEBHOOK_PATH = f"/webhook/{token}"
 
-    # --- КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: БЕЗОПАСНАЯ ИНИЦИАЛИЗАЦИЯ ПЕРСИСТЕНСА ---
+    # Безопасная инициализация персистенса (ваш код был хорош)
     try:
-        # Пытаемся загрузить персистенс
         persistence = PicklePersistence(filepath=DATA_FILE)
-        print("Персистенс загружен успешно.")
+        logger.info("Персистенс загружен успешно.")
     except Exception as e:
-        # Если загрузка не удалась (файл поврежден или устарел), начинаем с чистых данных
-        print(f"ВНИМАНИЕ: Ошибка загрузки персистенса ({e}). Начинаем с чистых данных.")
-        # on_flush=False предотвращает немедленную запись пустого файла (опционально, но безопасно)
+        logger.warning(f"ВНИМАНИЕ: Ошибка загрузки персистенса ({e}). Начинаем с чистых данных.")
         persistence = PicklePersistence(filepath=DATA_FILE, on_flush=False)
-    # ----------------------------------------------------------------------
     
     app = (
         ApplicationBuilder()
@@ -830,18 +891,24 @@ def main():
     if "events" not in app.bot_data:
         app.bot_data["events"] = {}
 
-    # базовые хендлеры
+    # 1. Регистрация глобального обработчика ошибок
+    app.add_error_handler(error_handler)
+
+    # 2. Регистрация хендлеров команд
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("create_event", create_event_command_quick))
-    app.add_handler(MessageHandler(filters.PHOTO & filters.Caption(True), create_event_from_photo_message))
     app.add_handler(CommandHandler("my_events", my_events_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CommandHandler("export_event", export_event_command))
     app.add_handler(CommandHandler("delete_event", delete_event_command))
-    # <<< ДОБАВЛЕНО: Регистрация новой админ команды >>>
     app.add_handler(CommandHandler("remove_participant", remove_participant_command))
 
-    # edit conversation
+    # 3. Регистрация хендлера для создания по фото
+    app.add_handler(MessageHandler(filters.PHOTO & filters.Caption(True), create_event_from_photo_message))
+    
+    # 4. Регистрация хендлера кнопок
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    # 5. Conversation: edit
     edit_conv = ConversationHandler(
         entry_points=[CommandHandler("edit_event", edit_event_command)],
         states={
@@ -851,33 +918,32 @@ def main():
             ],
         },
         fallbacks=[CommandHandler("cancel", edit_cancel)],
-        # conversation_timeout=300, # <<< УДАЛЕНО: Убран таймаут, чтобы не было предупреждений >>>
     )
     app.add_handler(edit_conv)
 
-    # create conversation (пошагово)
+    # 6. Conversation: create (пошагово)
     create_conv = ConversationHandler(
         entry_points=[CommandHandler("create", create_start)],
         states={
-            C_TITLE: [MessageHandler(filters.ALL & ~filters.COMMAND, create_title)],
+            C_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_title)],
             C_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_date)],
             C_CAPACITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_capacity)],
             C_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_location)],
             C_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_description)],
             C_PHOTO: [
+                # 🌟 ИСПРАВЛЕНИЕ: Принимаем ТЕКСТ (для 'skip' или ошибки) или ФОТО
                 MessageHandler(
-                    (filters.PHOTO & ~filters.COMMAND) | (filters.Regex("(?i)^skip$") & ~filters.COMMAND),
+                    (filters.PHOTO | filters.TEXT) & ~filters.COMMAND,
                     create_photo_step,
                 )
             ],
         },
         fallbacks=[CommandHandler("cancel", create_cancel)],
-        # conversation_timeout=600, # <<< УДАЛЕНО: Убран таймаут, чтобы не было предупреждений >>>
     )
     app.add_handler(create_conv)
 
-    # 4. ЗАПУСК В РЕЖИМЕ WEBHOOK
-    print("Бот запускается в режиме Webhook...")
+    # 7. ЗАПУСК В РЕЖИМЕ WEBHOOK
+    logger.info("Бот запускается в режиме Webhook...")
     app.run_webhook(
         listen="0.0.0.0",
         port=port,
